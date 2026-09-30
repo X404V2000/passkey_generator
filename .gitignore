@@ -22,5 +22,10 @@ dist/
 *.egg-info/
 *.egg
 
-# Any image architecture
+# Rust Build & Distribution
+target/
+*.rlib
+*.rs.bk
+
+# Media & Screenshots
 *.png
