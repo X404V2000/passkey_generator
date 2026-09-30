@@ -1,0 +1,26 @@
+# Virtual Environment
+pass_/
+venv/
+.env
+.env/
+
+# Python cache & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build & Distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Any image architecture
+*.png

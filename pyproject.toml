@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "passkey-gen"
+version = "1.0.0"
+description = "High-entropy, stateless passkey and secret key generator with active memory zeroization."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Security Engineering Team" }
+]
+dependencies = [
+    "cryptography>=40.0.0",
+    "cbor2>=6.0.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Security",
+    "Topic :: Security :: Cryptography"
+]
+
+[project.scripts]
+passkey-gen = "passkey_gen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
