@@ -1,16 +1,30 @@
-//! Platform FFI for TokenGen: memory locking and core-dump disabling.
+//! Platform FFI for TokenGen: memory locking, core-dump disabling, and (F3.5)
+//! USB device resolution.
 //!
 //! **This is the only crate in the workspace permitted to contain `unsafe`.**
 //! It exposes a **safe** public API; all `unsafe` blocks are internal and each
 //! carries a `// SAFETY:` justification. The main `tokengen` crate keeps
 //! `#![forbid(unsafe_code)]` and calls into this crate through safe functions.
 //!
+//! # Module layout, and why it is split
+//!
+//! | Module | Domain | `unsafe`-bearing module |
+//! |---|---|---|
+//! | [`memory`] | `mlock`/`munlock`, page arithmetic | `memory::platform` |
+//! | [`coredump`] | `setrlimit(RLIMIT_CORE)` | `coredump::platform` |
+//!
+//! F3 shipped this crate as a single file with **one** `#[allow(unsafe_code)]`
+//! module. F3.5 requires a second platform domain, and adding it to the same file
+//! would leave the confinement guarantee true but unreadable. The split is
+//! deliberate and is recorded as
+//! [`AM-002`](../../plan/reports/F3/AM-002_tokengen-sys_Module_Split.md): **the
+//! set of `unsafe`-bearing modules is enumerated rather than asserted.**
+//!
+//! **The public API is unchanged by the split.** No item was added, removed, or
+//! renamed; code compiled against the F3 freeze anchor compiles unchanged.
+//!
 //! # Design notes
 //!
-//! - **Page arithmetic lives here, not in the caller.** [`lock`] computes the
-//!   page-rounded range and returns it inside an opaque [`LockHandle`];
-//!   [`unlock`] consumes that handle and passes the *same* range to `munlock`.
-//!   The caller never computes, rounds, or re-derives a range.
 //! - **Fail closed.** On a target with no backend (see `W1` in the F3 blueprint),
 //!   these functions return `NotSupported`. They never report success for a
 //!   capability that is not implemented — a stub returning `Ok` would make the
@@ -25,6 +39,9 @@
 #![deny(missing_docs)]
 
 use core::marker::PhantomData;
+
+pub mod coredump;
+pub mod memory;
 
 /// Reason a memory-locking attempt failed.
 ///
@@ -72,17 +89,17 @@ pub enum CoreDumpError {
 ///   rather than risking an unlock of memory still in use. `#[must_use]` warns.
 #[must_use]
 pub struct LockHandle {
-    base: usize,
-    rounded_len: usize,
+    pub(crate) base: usize,
+    pub(crate) rounded_len: usize,
     // Forces !Send and !Sync even though every other field is `usize`.
-    _not_send: PhantomData<*const ()>,
+    pub(crate) _not_send: PhantomData<*const ()>,
 }
 
 impl LockHandle {
     /// A handle representing "no range". Produced for an empty buffer.
     ///
     /// [`unlock`] performs no syscall for such a handle.
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             base: 0,
             rounded_len: 0,
@@ -91,7 +108,7 @@ impl LockHandle {
     }
 
     /// True if this handle represents no range.
-    fn is_empty_range(&self) -> bool {
+    pub(crate) fn is_empty_range(&self) -> bool {
         self.rounded_len == 0
     }
 }
@@ -122,7 +139,7 @@ pub fn lock(buf: &mut [u8]) -> Result<LockHandle, LockError> {
     if buf.is_empty() {
         return Ok(LockHandle::empty());
     }
-    platform::lock_range(buf.as_ptr() as usize, buf.len())
+    memory::lock_range(buf.as_ptr() as usize, buf.len())
 }
 
 /// Lock an explicit memory range given by base address and length.
@@ -148,7 +165,7 @@ pub fn lock_allocation(base: usize, len: usize) -> Result<LockHandle, LockError>
     if len == 0 {
         return Ok(LockHandle::empty());
     }
-    platform::lock_range(base, len)
+    memory::lock_range(base, len)
 }
 
 /// Release the range described by `handle`, consuming it.
@@ -159,7 +176,7 @@ pub fn unlock(handle: LockHandle) {
     if handle.is_empty_range() {
         return;
     }
-    platform::unlock_range(handle.base, handle.rounded_len);
+    memory::unlock_range(handle.base, handle.rounded_len);
 
     #[cfg(feature = "test-hooks")]
     hooks::record_unlock();
@@ -169,7 +186,7 @@ pub fn unlock(handle: LockHandle) {
 ///
 /// Idempotent. Call once at startup, before generating any key.
 pub fn disable_core_dumps() -> Result<(), CoreDumpError> {
-    platform::disable_core_dumps()
+    coredump::disable_core_dumps()
 }
 
 /// Test-only ordering hooks.
@@ -240,146 +257,6 @@ pub mod hooks {
     /// Record that unlocking occurred.
     pub fn record_unlock() {
         push(TAG_UNLOCK);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Platform backends
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-// The `unsafe` opt-out for this crate. Confined to this single module; every
-// `unsafe` block inside carries a `// SAFETY:` justification. The main
-// `tokengen` crate cannot acquire this allowance — its root uses `forbid`,
-// which no module can relax (verified: `error[E0453]`).
-#[allow(unsafe_code)]
-mod platform {
-    use super::{CoreDumpError, LockError, LockHandle};
-    use core::marker::PhantomData;
-
-    /// Page size, or a safe fallback if the query fails.
-    fn page_size() -> usize {
-        // SAFETY: `sysconf` takes an int and returns a long; it has no pointer
-        // arguments and cannot fail in a way that affects memory safety.
-        let raw = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        if raw > 0 {
-            // A page size is small and positive; the cast cannot truncate in
-            // practice on any supported platform.
-            raw as usize
-        } else {
-            4096
-        }
-    }
-
-    fn round_up(value: usize, align: usize) -> usize {
-        // `align` is a power of two from the OS. Saturating arithmetic avoids a
-        // panic in debug builds on absurd inputs, which `panic = "deny"` would
-        // otherwise turn into a build failure.
-        match value.checked_add(align - 1) {
-            Some(v) => v & !(align - 1),
-            None => value,
-        }
-    }
-
-    fn classify(errno: i32) -> LockError {
-        match errno {
-            libc::EPERM | libc::EACCES => LockError::PermissionDenied,
-            libc::ENOMEM => LockError::ResourceLimit,
-            other => LockError::Other(other),
-        }
-    }
-
-    pub(super) fn lock_range(raw_start: usize, raw_len: usize) -> Result<LockHandle, LockError> {
-        let page = page_size();
-        let raw_end = match raw_start.checked_add(raw_len) {
-            Some(v) => v,
-            None => return Err(LockError::Other(libc::EINVAL)),
-        };
-
-        let start = raw_start & !(page - 1);
-        let end = round_up(raw_end, page);
-        let len = end.saturating_sub(start);
-
-        // SAFETY: `mlock` reads only the address range given to it. The range is
-        // derived from a live allocation whose base and length the caller
-        // supplied, is page-aligned on both ends as `mlock` requires, and does
-        // not outlive that allocation because the returned handle is consumed by
-        // `unlock` before the owning `Secret` is deallocated. `mlock` does not
-        // retain the pointer.
-        let rc = unsafe { libc::mlock(start as *const libc::c_void, len) };
-
-        if rc == 0 {
-            Ok(LockHandle {
-                base: start,
-                rounded_len: len,
-                _not_send: PhantomData,
-            })
-        } else {
-            // SAFETY: `__errno_location` returns a valid pointer to this thread's
-            // errno for the lifetime of the thread.
-            let errno = unsafe { *libc::__errno_location() };
-            Err(classify(errno))
-        }
-    }
-
-    pub(super) fn unlock_range(base: usize, len: usize) {
-        if len == 0 {
-            return;
-        }
-        // SAFETY: `munlock` reads only the address range given to it. The range is
-        // exactly the one `mlock` accepted, held in the handle that was consumed
-        // by the caller, and the owning allocation is still live at this point
-        // because `Secret::drop` unlocks before deallocating.
-        let _ = unsafe { libc::munlock(base as *const libc::c_void, len) };
-    }
-
-    pub(super) fn disable_core_dumps() -> Result<(), CoreDumpError> {
-        let rlim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-
-        // SAFETY: `setrlimit` reads the `rlimit` struct we pass. The struct is
-        // stack-allocated and remains valid for the duration of the call; the
-        // call does not retain the pointer.
-        let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rlim) };
-
-        if rc == 0 {
-            Ok(())
-        } else {
-            // SAFETY: as above — a valid pointer to this thread's errno.
-            let errno = unsafe { *libc::__errno_location() };
-            if errno == libc::EPERM {
-                Err(CoreDumpError::PermissionDenied)
-            } else {
-                Err(CoreDumpError::Other(errno))
-            }
-        }
-    }
-}
-
-/// Targets with no backend in this revision. Fail closed.
-///
-/// Returning `Err(NotSupported)` — never `Ok(())` — is deliberate: a stub that
-/// reported success would make the caller's `Locked` status a lie and leave
-/// invariants G14/G15 silently unmet. See the F3 blueprint §14 W1.
-#[cfg(not(unix))]
-mod platform {
-    use super::{CoreDumpError, LockError, LockHandle};
-
-    // Signature must match the Unix implementation exactly. It is checked by the
-    // `cfg-forcing check` in `scripts/cfg_check.sh`, which compiles this branch on
-    // any host — because the Unix gates never see it. A `cfg`-gated stub that is
-    // never compiled can drift from its callers silently, which is exactly what
-    // happened here once already (see failures-table entry 11).
-    pub(super) fn lock_range(_raw_start: usize, _raw_len: usize) -> Result<LockHandle, LockError> {
-        Err(LockError::NotSupported)
-    }
-
-    pub(super) fn unlock_range(_base: usize, _len: usize) {}
-
-    pub(super) fn disable_core_dumps() -> Result<(), CoreDumpError> {
-        Err(CoreDumpError::NotSupported)
     }
 }
 
