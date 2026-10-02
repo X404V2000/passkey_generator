@@ -1,4 +1,19 @@
-# Secure Passkey Generator (`passkey-gen`)
+# TokenGen (`passkey-gen`)
+
+> ## ⚠️ Project status — read before installing
+>
+> TokenGen is migrating from a **legacy Python implementation** to a **Rust implementation**.
+>
+> | | Rust (`src/`) | Python (`src/passkey_gen/`) |
+> |---|---|---|
+> | Status | **Supported.** F1 (entropy) and F2 (key generation) are frozen. | **Legacy — do not use for real secrets.** |
+> | Zeroization | Enforced by the type system (`Zeroizing<T>`) | `SecurePasskey` only; **not** `WebAuthnPasskey` |
+> | Constant-time comparisons | `subtle` types | Not available |
+> | Memory locking (`mlock`) | Sound (stable buffer address) | Best-effort; GC may move data |
+>
+> **The Python implementation does not satisfy this project's own security invariants and must not be relied on.** Specifically, `WebAuthnPasskey.destroy()` drops a reference without wiping memory, and `export_private_key_pem()` returns an unwipeable `str` containing the private key. See [`docs/LANGUAGE_DECISION.md`](docs/LANGUAGE_DECISION.md) §4 for the verified findings.
+>
+> Security guarantees in the sections below describe the **Rust** implementation unless explicitly stated otherwise.
 
 A cryptographically secure, stateless passkey and secret key generator engineered with a **defense-in-depth** security architecture.
 
@@ -20,6 +35,7 @@ A cryptographically secure, stateless passkey and secret key generator engineere
    - Standard Python strings (`str`) are immutable and reside in PyMalloc heap arenas until reclaimed by garbage collection.
    - `passkey-gen` encapsulates secrets inside [`SecurePasskey`](file:///home/deathrok/Desktop/projects/passkey_generator/src/passkey_gen/memory.py), backed by native C buffers (`ctypes`).
    - On context exit or `.destroy()`, memory is actively wiped using OS-level `explicit_bzero` / `memset` and zeroized byte-by-byte.
+     - **Scope of this guarantee (Python):** it applies to `SecurePasskey` only. It does **not** apply to `WebAuthnPasskey`, whose `destroy()` sets `self._private_key = None` without wiping, and which never calls `zeroize_buffer` or `mlock`.
    - Implements memory locking (`mlock`) to pin secret buffers in physical RAM and prevent paging to unencrypted swap disks.
    - Redacts string representations (`repr` / `str`) to prevent accidental leakage in debug logs or exception tracebacks.
 
@@ -177,7 +193,10 @@ with generate_webauthn_passkey(WebAuthnAlgorithm.ES256) as passkey:
     # Sign an authentication challenge assertion (clientDataHash)
     signature = passkey.sign_assertion(b"test_challenge_hash_32_bytes___")
 
-# Exiting the block immediately wipes and zeroizes the private key from memory!
+# WARNING: contrary to earlier versions of this document, exiting this block does
+# NOT wipe the private key. WebAuthnPasskey.destroy() sets self._private_key = None,
+# which drops the reference without zeroizing memory. Do not rely on this class to
+# protect long-lived private key material. See docs/LANGUAGE_DECISION.md §4.
 ```
 
 ---

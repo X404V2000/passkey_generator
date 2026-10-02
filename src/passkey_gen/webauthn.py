@@ -1,6 +1,26 @@
 """
 FIDO2 / WebAuthn Asymmetric Passkey Generation.
 
+.. warning::
+   **This module does not satisfy the project's memory-hygiene invariants and
+   must not be relied on to protect long-lived private key material.**
+
+   Despite ``destroy()``'s docstring, it performs **no zeroization** — it sets
+   ``self._private_key = None``, which drops the reference without wiping memory.
+   Consequently:
+
+   - ``zeroize_buffer`` is imported but never called in this module.
+   - No ``mlock`` is performed, so key material may be paged to swap.
+   - ``export_private_key_pem()`` returns a ``str`` containing the private key.
+     Python ``str`` is immutable and cannot be wiped, so that copy persists
+     until the garbage collector happens to reclaim it.
+   - ``sign_assertion()`` uses ``assert isinstance(...)`` to select an
+     algorithm; ``assert`` is stripped under ``python -O``.
+
+   ``SecurePasskey`` in ``memory.py`` *does* zeroize correctly. This module does
+   not follow it. See ``docs/LANGUAGE_DECISION.md`` §4 for the verified findings
+   and the migration plan.
+
 Implements W3C WebAuthn Level 3 & FIDO2 discoverable credentials:
 1. Standard cryptographic algorithms:
    - ES256 (NIST P-256 / secp256r1 with ECDSA-SHA256, COSE alg -7)
@@ -10,10 +30,11 @@ Implements W3C WebAuthn Level 3 & FIDO2 discoverable credentials:
    - COSE Key (RFC 8152 / RFC 9052 CBOR-encoded, base64url for WebAuthn APIs)
    - PEM (SubjectPublicKeyInfo)
    - JWK (RFC 7517)
-4. Hardware/Zero-Trace Private Key Lifecycle:
-   - In-memory private key material is kept in zeroizable memory buffers.
-   - Challenge signing (clientDataHash assertion) with immediate disposal.
-   - Export encrypted private keys (PKCS#8 with AES-256-CBC/PBKDF2) or destroy immediately.
+4. Private Key Lifecycle (public key export is safe; private key handling is NOT):
+   - Private key material is held as a ``cryptography`` object that cannot be
+     reached or wiped from Python.
+   - Signing is available, but the returned signature bytes are not wipeable.
+   - Private key export returns unwipeable ``str``/``bytes``.
 """
 
 import base64
@@ -25,7 +46,11 @@ import cbor2
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 
-from passkey_gen.memory import SecurePasskey, zeroize_buffer
+# NOTE: `zeroize_buffer` is imported but NEVER CALLED in this module, despite the
+# module docstring previously claiming private key material is "kept in zeroizable
+# memory buffers". The import is retained only so that the eventual Rust port has a
+# visible reference point; it is not evidence of zeroization. See LANGUAGE_DECISION §4.
+from passkey_gen.memory import SecurePasskey, zeroize_buffer  # noqa: F401
 
 
 class WebAuthnAlgorithm(str, Enum):
@@ -208,7 +233,17 @@ class WebAuthnPasskey:
 
     def destroy(self) -> None:
         """
-        Zeroize and discard the private key instance.
+        Discard the private key reference and mark this passkey destroyed.
+
+        .. warning::
+           This method **does not zeroize memory.** It drops the reference;
+           the underlying key material remains in the heap until the garbage
+           collector reclaims it, and CPython does not wipe freed memory. The
+           `cryptography` private key object's internal buffers are not
+           reachable from Python and cannot be wiped here at all.
+
+           Previous versions of this docstring read "Zeroize and discard the
+           private key instance", which was inaccurate.
         """
         if self._destroyed:
             return

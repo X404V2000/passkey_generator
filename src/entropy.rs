@@ -150,7 +150,11 @@ mod tests {
         let mut buf1 = [0u8; 32];
         let mut buf2 = [0u8; 32];
         assert!(OsEntropy::new().fill(&mut buf1).is_ok());
-        assert!(OsEntropy::default().fill(&mut buf2).is_ok());
+        // Call through the `Default` trait rather than `OsEntropy::default()`:
+        // clippy rejects `default()` on a unit struct, but this test exists
+        // precisely to verify the `Default` impl matches `new()`.
+        let from_default: OsEntropy = Default::default();
+        assert!(from_default.fill(&mut buf2).is_ok());
         assert_ne!(buf1, buf2);
     }
 }
