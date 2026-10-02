@@ -1,0 +1,23 @@
+error: unused `MemoryLockStatus` in tuple element 1 that must be used
+  --> tests/compile-fail/must_use_lock_status.rs:24:5
+   |
+24 |     Secret::new(vec![0x41u8; 32]);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> tests/compile-fail/must_use_lock_status.rs:5:9
+   |
+5  | #![deny(unused_must_use)]
+   |         ^^^^^^^^^^^^^^^
+
+error: unused return value of `Secret::<T>::new` that must be used
+  --> tests/compile-fail/must_use_lock_status.rs:24:5
+   |
+24 |     Secret::new(vec![0x41u8; 32]);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the memory-lock status must be surfaced; a denied lock means the secret is swappable
+help: use `let _ = ...` to ignore the resulting value
+   |
+24 |     let _ = Secret::new(vec![0x41u8; 32]);
+   |     +++++++

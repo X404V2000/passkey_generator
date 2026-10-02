@@ -1,0 +1,43 @@
+error[E0277]: `*const ()` cannot be sent between threads safely
+  --> tests/compile-fail/handle_not_send_real.rs:29:17
+   |
+29 |     assert_send(&handle);
+   |     ----------- ^^^^^^^ `*const ()` cannot be sent between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `LockHandle`, the trait `Send` is not implemented for `*const ()`
+note: required because it appears within the type `PhantomData<*const ()>`
+  --> /usr/src/rustc-1.85.1/library/core/src/marker.rs:757:12
+note: required because it appears within the type `LockHandle`
+  --> tokengen-sys/src/lib.rs
+   |
+   | pub struct LockHandle {
+   |            ^^^^^^^^^^
+note: required by a bound in `assert_send`
+  --> tests/compile-fail/handle_not_send_real.rs:21:19
+   |
+21 | fn assert_send<T: Send>(_: &T) {}
+   |                   ^^^^ required by this bound in `assert_send`
+
+error[E0277]: `*const ()` cannot be shared between threads safely
+  --> tests/compile-fail/handle_not_send_real.rs:32:17
+   |
+32 |     assert_sync(&handle);
+   |     ----------- ^^^^^^^ `*const ()` cannot be shared between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `LockHandle`, the trait `Sync` is not implemented for `*const ()`
+note: required because it appears within the type `PhantomData<*const ()>`
+  --> /usr/src/rustc-1.85.1/library/core/src/marker.rs:757:12
+note: required because it appears within the type `LockHandle`
+  --> tokengen-sys/src/lib.rs
+   |
+   | pub struct LockHandle {
+   |            ^^^^^^^^^^
+note: required by a bound in `assert_sync`
+  --> tests/compile-fail/handle_not_send_real.rs:22:19
+   |
+22 | fn assert_sync<T: Sync>(_: &T) {}
+   |                   ^^^^ required by this bound in `assert_sync`

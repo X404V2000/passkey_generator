@@ -139,6 +139,12 @@ impl<T: SecretBuf> Secret<T> {
     /// The attribute catches `Secret::new(buf);` — the whole tuple discarded.
     /// It does **not** catch `let (secret, _) = Secret::new(buf);`. That case is
     /// a documented limitation, not a guarantee; callers must read the status.
+    ///
+    /// The attribute on the *function* is what makes the first case warn. Note it
+    /// must be here and not only on `MemoryLockStatus`: a tuple return type is not
+    /// itself `#[must_use]`, so marking the enum alone would leave the discarded
+    /// tuple silent — which is exactly what the compile-fail test detected.
+    #[must_use = "the memory-lock status must be surfaced; a denied lock means the secret is swappable"]
     pub fn new(mut buf: T) -> (Self, MemoryLockStatus) {
         let (base, len) = buf.allocation_base_and_len();
 

@@ -1,0 +1,21 @@
+error[E0277]: `*const ()` cannot be sent between threads safely
+  --> tests/compile-fail/handle_not_send_mechanism.rs:47:17
+   |
+47 |     assert_send(&marked);
+   |     ----------- ^^^^^^^ `*const ()` cannot be sent between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `Marked`, the trait `Send` is not implemented for `*const ()`
+note: required because it appears within the type `PhantomData<*const ()>`
+  --> /usr/src/rustc-1.85.1/library/core/src/marker.rs:757:12
+note: required because it appears within the type `Marked`
+  --> tests/compile-fail/handle_not_send_mechanism.rs:26:8
+   |
+26 | struct Marked {
+   |        ^^^^^^
+note: required by a bound in `assert_send`
+  --> tests/compile-fail/handle_not_send_mechanism.rs:32:19
+   |
+32 | fn assert_send<T: Send>(_: &T) {}
+   |                   ^^^^ required by this bound in `assert_send`

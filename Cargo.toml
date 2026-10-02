@@ -39,3 +39,4 @@ tokengen-sys = { path = "tokengen-sys" }
 
 [dev-dependencies]
 tokengen-sys = { path = "tokengen-sys", features = ["test-hooks"] }
+trybuild     = "1"
