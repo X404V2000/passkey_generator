@@ -1,0 +1,49 @@
+[package]
+name = "tokengen-sys"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+publish = false
+description = "Platform FFI for TokenGen: memory locking and core-dump disabling. The only crate in this workspace permitted to contain `unsafe`."
+
+# Explicit opt-out from the workspace's `unsafe_code = "forbid"`.
+#
+# NOTE ON MECHANISM: Cargo rejects a manifest having both
+# `[lints] workspace = true` and a local `[lints.rust]` override
+# ("cannot override `workspace.lints` in `lints`"). This crate therefore
+# inherits NO workspace lints and declares all of its own below. That is
+# deliberate — it is the only form permitting the `unsafe_code` opt-out. The
+# clippy lints repeated from the workspace are intentional, not duplication.
+#
+# The opt-out is declared here rather than implicit so a reviewer reading this
+# manifest sees immediately that one crate — and only this one — has the
+# exception. `forbid` cannot be relaxed by any module, so no other crate in the
+# workspace can acquire it.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+print_stdout   = "deny"
+print_stderr   = "deny"
+unwrap_used    = "deny"
+expect_used    = "deny"
+panic          = "deny"
+
+[dependencies]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# NOTE: `windows-sys` is deliberately NOT a dependency in this revision. The
+# Windows backend is deferred (see the F3 blueprint §14 W1). An unused,
+# unverifiable dependency is attack surface with no offsetting benefit; add it
+# back together with the backend.
+
+[features]
+# Test-only. Enables an ordering-observation hook so the parent crate's tests can
+# assert that zeroization precedes unlocking in `Secret::drop`.
+#
+# MUST NOT be enabled in a release build. It is opt-in (not in `default`), and a
+# CI grep over the release workflow enforces that it stays out. Verified absent
+# from the default build graph and from release artifacts.
+test-hooks = []

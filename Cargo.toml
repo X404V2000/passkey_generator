@@ -1,3 +1,16 @@
+[workspace]
+members = [".", "tokengen-sys"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+print_stdout   = "deny"
+print_stderr   = "deny"
+unwrap_used    = "deny"
+expect_used    = "deny"
+panic          = "deny"
+
 [package]
 name = "tokengen"
 version = "0.1.0"
@@ -9,15 +22,20 @@ publish = false
 name = "tokengen"
 path = "src/lib.rs"
 
-[lints.rust]
-unsafe_code = "forbid"
+[lints]
+workspace = true
 
-[lints.clippy]
-print_stdout   = "deny"
-print_stderr   = "deny"
-unwrap_used    = "deny"
-expect_used    = "deny"
-panic          = "deny"
+[features]
+# Forwards to `tokengen-sys/test-hooks`. Enabled only via `dev-dependencies`
+# below, so it is absent from default and release builds. It exists so
+# `src/zeroize.rs` can record zeroize/unlock ordering for the discriminating
+# assertion in `tests/zeroize_ordering.rs`.
+test-hooks = ["tokengen-sys/test-hooks"]
 
 [dependencies]
-getrandom = "0.2"
+getrandom    = "0.2"
+zeroize      = "1"
+tokengen-sys = { path = "tokengen-sys" }
+
+[dev-dependencies]
+tokengen-sys = { path = "tokengen-sys", features = ["test-hooks"] }
