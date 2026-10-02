@@ -367,7 +367,12 @@ mod platform {
 mod platform {
     use super::{CoreDumpError, LockError, LockHandle};
 
-    pub(super) fn lock_range(_buf: &mut [u8]) -> Result<LockHandle, LockError> {
+    // Signature must match the Unix implementation exactly. It is checked by the
+    // `cfg-forcing check` in `scripts/cfg_check.sh`, which compiles this branch on
+    // any host — because the Unix gates never see it. A `cfg`-gated stub that is
+    // never compiled can drift from its callers silently, which is exactly what
+    // happened here once already (see failures-table entry 11).
+    pub(super) fn lock_range(_raw_start: usize, _raw_len: usize) -> Result<LockHandle, LockError> {
         Err(LockError::NotSupported)
     }
 
