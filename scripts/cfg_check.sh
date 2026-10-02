@@ -65,11 +65,18 @@ EXPECTED = {
 files = sorted(glob.glob(os.path.join(src_dir, "*.rs")))
 inverted = 0
 seen = {}
+# Files that contain ANY `cfg(unix)`/`cfg(not(unix))` gate, regardless of whether
+# we understand them. Used to detect a module the coverage map does not know
+# about -- a module that is present in the tree but absent from EXPECTED.
+gated = set()
 
 for path in files:
     name = os.path.basename(path)
     text = open(path).read()
     before = text
+
+    if "#[cfg(unix)]" in text or "#[cfg(not(unix))]" in text:
+        gated.add(name)
 
     text = text.replace("#[cfg(unix)]", "#[cfg(any())]")
     text = text.replace("#[cfg(not(unix))]", "#[cfg(all())]")
@@ -104,7 +111,25 @@ if missing:
         f"Add them to EXPECTED or remove them from the list."
     )
 
+# THE IMPORTANT DIRECTION, and the one that was originally missing: a module that
+# CONTAINS cfg gates but is NOT in EXPECTED is a module this gate does not cover.
+# The check above catches a listed module that disappears; this catches an
+# unlisted module that appears -- which is the live risk when a new platform
+# domain (F3.5's device.rs) is added. Without this, adding device.rs would leave
+# its stubs silently uncompiled while the gate still reported PASS.
+#
+# Verified by introducing exactly that defect and observing this branch fire;
+# before this change, an unlisted gated module passed with exit 0.
+uncovered = sorted(gated - set(EXPECTED))
+if uncovered:
+    sys.exit(
+        f"FATAL: module(s) contain cfg(unix)/cfg(not(unix)) gates but are NOT in "
+        f"EXPECTED: {uncovered}. Add each with its expected gate count, or this "
+        f"gate does not cover them."
+    )
+
 print(f"inverted {inverted} gate(s) across {len(seen)} module(s): {sorted(seen)}")
+print(f"coverage: all {len(gated)} gated module(s) are accounted for")
 PY
 
 echo "building with the non-Unix branches compiled..."
