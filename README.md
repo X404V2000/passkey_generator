@@ -49,6 +49,30 @@ A cryptographically secure, stateless passkey and secret key generator engineere
 
 ---
 
+## What This Tool Cannot Do
+
+Stated because a limitation the user is not told about is a limitation they will assume away.
+
+- **Memory locking and core-dump disabling are Linux-only in the current revision.** Guarantees 4 and
+  5 depend on `mlock`/`munlock` and `setrlimit(RLIMIT_CORE)`, which are POSIX interfaces. The Windows
+  backend is **deferred**: on a non-Unix target these capabilities are **not provided at all**, and
+  the library reports `NotSupported` rather than silently succeeding. Code that asks for a lock on
+  Windows receives an error; it does not receive a false assurance.
+- **Zeroization is best-effort against a privileged attacker.** Wiping memory protects against
+  crashes, swap files, and later reuse of the same allocation. It does not protect against a
+  compromised kernel, a hypervisor, or hardware that can read physical memory.
+- **A copy of a secret is not automatically protected.** `Secret<T>` wipes what it owns. Copying its
+  bytes into an ordinary `Vec<u8>`, a `String`, or a language runtime that manages memory itself
+  creates material that nothing will wipe. This is a property of the surrounding language, not of
+  this library.
+- **`#[must_use]` is not exhaustive.** Discarding the whole `(Secret, MemoryLockStatus)` tuple warns,
+  but `let (secret, _) = Secret::new(buf);` does not. The caller must read the status; the type
+  system will not force them to.
+- **This is not a key store.** `Secret<T>` protects a buffer for the duration of an operation. It does
+  not persist, rotate, or manage keys.
+
+---
+
 ## Installation & Environment
 
 The virtual environment is set up at `pass_`:
