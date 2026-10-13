@@ -174,3 +174,32 @@ nvme0n1      0 nvme
 
 Per the rule adopted from the directive: *a citation is acceptable where a probe is impossible; an
 unlabelled assertion is not.* Every row above is labelled.
+
+---
+
+## P9 — Planned: device-class coverage on real hardware (Founder's drives)
+
+**Status: NOT YET RUN — no removable device currently attached.** Recorded here so the requirement is not
+forgotten, and so it is not mistaken for evidence already gathered.
+
+The maintainer has **two test devices**: a USB flash drive, and a **2.5" HDD in a USB enclosure**. The second
+is the more valuable test, because it differs from a flash stick in two ways that bear directly on the design:
+
+| Property | USB flash stick | 2.5" HDD in USB enclosure | Why it matters |
+|---|---|---|---|
+| `TRAN` | `usb` | `usb` | same |
+| **`RM` (removable)** | `1` | **often `0`** | **Test 1 rejects non-removable devices.** If a USB HDD reports `RM=0`, TokenGen refuses a device the user considers removable. Is that correct? Answer with data, not assumption. |
+| **Spin-up latency** | negligible | **up to seconds when spun down** | §9's budget is **250 ms**. If a sleeping HDD exceeds it, the arithmetic must be **re-derived — the claim must not be softened**. |
+| `vpd_pg80` serial | present (P8) | expected present — **verify** | do not assume it matches the flash path |
+
+**What P9 must measure, when a device is attached:**
+
+1. `cat /sys/block/<dev>/removable` for the HDD — record the value. If `0`, this is a **design question**, not
+   a bug: the guard's removable check may need to consider transport as well as the flag.
+2. `timed` read of `vpd_pg80` on a **spun-down** HDD — record the wall-clock time against the 250 ms budget.
+3. The full `stat → st_dev → /sys/dev/block` chain on the HDD, as for the flash stick.
+4. **Swap detection with two real devices**: capture on device A, swap to device B, confirm
+   `IdentityMismatch` — the two devices give us the pair the design requires.
+
+**No writes, no mounting required** for any of this: all four are reads of sysfs and stat. **Do not use the
+maintainer's LUKS-encrypted drive** for mounted or destructive work under any circumstance.
