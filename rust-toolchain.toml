@@ -1,0 +1,10 @@
+[toolchain]
+# Pinned deliberately. The trybuild compile-fail snapshots under tests/compile-fail/*.stderr are
+# compiler-version-sensitive: a different toolchain changes the error text and the suite fails for a
+# reason unrelated to the code. Pinning removes that failure mode by construction, so local runs and
+# CI agree. See plan/reports/CI/CI-001_design.md §4.
+#
+# Do NOT bump this without regenerating the .stderr snapshots and re-running the full gate suite.
+channel = "1.85.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

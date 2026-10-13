@@ -1,0 +1,111 @@
+# TokenGen CI — cross-platform gate matrix.
+#
+# Design: plan/reports/CI/CI-001_design.md
+# Purpose: prove the project builds and passes its gates on Linux, Windows and macOS. This is the
+#   evidence base for the three-platform promise (Founder decision D-P3) and the test bar (D-P4).
+#
+# Two properties are load-bearing and must not be relaxed:
+#   1. No gate step uses `continue-on-error`. A gate that cannot fail is a gate that reports success
+#      without running — the defect class this project's own rules forbid.
+#   2. The toolchain is pinned via rust-toolchain.toml (1.85.1), because the trybuild snapshots are
+#      compiler-version-sensitive.
+#
+# What this CANNOT prove: interactive USB removal, GUI interaction, or a hostile host. Those are
+# manual verification items (PROJECT_PLAN §8), never claimed as CI-verified.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+    # Do NOT use pull_request_target — it runs with a writable token against untrusted input.
+    types: [opened, synchronize, reopened]
+
+# Least privilege: the gate matrix only needs to read the repo.
+permissions:
+  contents: read
+
+# Cancels superseded runs on the same ref — saves CI minutes, not correctness.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deny warnings globally so a warning cannot be silently tolerated.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # The gate matrix: build, test, lint, format, cfg-coverage and advisories on all three OSes.
+  # ---------------------------------------------------------------------------------------------
+  gates:
+    name: gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain comes from rust-toolchain.toml (pinned to 1.85.1). `rustup show` records what ran.
+      - name: Show toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # --locked everywhere: a lockfile that CI silently updates is not a reproducible build.
+      - name: Build (release, locked)
+        run: cargo build --release --locked
+
+      - name: Test (release, locked, with test-hooks)
+        run: cargo test --release --locked --features test-hooks
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets --features test-hooks -- -D warnings
+
+      - name: Format check
+        run: cargo fmt --check
+
+      # Compiles every cfg branch (the F3 lesson: a branch no gate compiles can drift silently).
+      # bash is available on all three runners, including Windows (Git Bash).
+      - name: cfg-forcing compile check
+        shell: bash
+        run: bash scripts/cfg_check.sh
+
+  # ---------------------------------------------------------------------------------------------
+  # Advisories: dependency audit. Separate job so a new advisory fails loudly and independently.
+  # ---------------------------------------------------------------------------------------------
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------------------------
+  # MSRV: the declared rust-version (1.75) must actually build.
+  # This job builds ONLY — it does not run the test suite. The trybuild .stderr snapshots are
+  # produced on the pinned 1.85.1 toolchain and cannot match on 1.75. See CI-001_design.md §5.
+  # ---------------------------------------------------------------------------------------------
+  msrv:
+    name: MSRV (1.75)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MSRV toolchain
+        run: rustup toolchain install 1.75 --profile minimal
+
+      - name: Build on MSRV (locked)
+        run: cargo +1.75 build --locked
