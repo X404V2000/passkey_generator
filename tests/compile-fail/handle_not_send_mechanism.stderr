@@ -8,7 +8,7 @@ error[E0277]: `*const ()` cannot be sent between threads safely
    |
    = help: within `Marked`, the trait `Send` is not implemented for `*const ()`
 note: required because it appears within the type `PhantomData<*const ()>`
-  --> /usr/src/rustc-1.85.1/library/core/src/marker.rs:757:12
+  --> $RUST/core/src/marker.rs
 note: required because it appears within the type `Marked`
   --> tests/compile-fail/handle_not_send_mechanism.rs:26:8
    |

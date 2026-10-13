@@ -8,7 +8,7 @@ error[E0277]: `*const ()` cannot be sent between threads safely
    |
    = help: within `LockHandle`, the trait `Send` is not implemented for `*const ()`
 note: required because it appears within the type `PhantomData<*const ()>`
-  --> /usr/src/rustc-1.85.1/library/core/src/marker.rs:757:12
+  --> $RUST/core/src/marker.rs
 note: required because it appears within the type `LockHandle`
   --> tokengen-sys/src/lib.rs
    |
@@ -30,7 +30,7 @@ error[E0277]: `*const ()` cannot be shared between threads safely
    |
    = help: within `LockHandle`, the trait `Sync` is not implemented for `*const ()`
 note: required because it appears within the type `PhantomData<*const ()>`
-  --> /usr/src/rustc-1.85.1/library/core/src/marker.rs:757:12
+  --> $RUST/core/src/marker.rs
 note: required because it appears within the type `LockHandle`
   --> tokengen-sys/src/lib.rs
    |
