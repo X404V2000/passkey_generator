@@ -47,7 +47,7 @@
 #[allow(unsafe_code)]
 mod platform {
     use crate::device::{
-        DeviceDescriptor, DeviceIdentity, DeviceReadError, IdentityComponent, RawDevice,
+        DeviceDescriptor, DeviceIdentity, DeviceReadError, IdentityComponent, RawDevice, Transport,
     };
     use std::ffi::CString;
     use std::fs;
@@ -132,13 +132,88 @@ mod platform {
     }
 
     /// Read `/sys/block/<disk>/removable`. `1` means the kernel considers it removable.
-    fn is_removable_disk(disk: &str) -> Result<bool, DeviceReadError> {
+    /// The kernel's `removable` flag for a whole disk, or `None` if it cannot be read.
+    ///
+    /// **Secondary signal only** — see [`is_removable_disk`].
+    fn removable_flag(disk: &str) -> Option<bool> {
         let p = format!("/sys/block/{disk}/removable");
-        let s = fs::read_to_string(&p).map_err(|_| DeviceReadError::PropertyUnreadable)?;
-        match s.trim() {
-            "1" => Ok(true),
-            "0" => Ok(false),
-            _ => Err(DeviceReadError::PropertyUnreadable),
+        match fs::read_to_string(&p).ok()?.trim() {
+            "1" => Some(true),
+            "0" => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The transport a whole disk is attached over, derived from its device path.
+    ///
+    /// Resolves `/sys/block/<disk>/device` and looks for a controller component. **Depth-independent:**
+    /// the device path's length varies by transport (NVMe is shallower than SCSI-over-USB), so walking a
+    /// fixed number of `..` levels is fragile. Counting components is not.
+    ///
+    /// Probed by `probes/transport_removability.py`, and cross-checked against both `/sys/dev/block` and
+    /// `lsblk -o TRAN`, which agree.
+    fn transport_of(disk: &str) -> Transport {
+        let path = format!("/sys/block/{disk}/device");
+        let Ok(resolved) = fs::canonicalize(&path) else {
+            return Transport::Unknown;
+        };
+        for component in resolved.components() {
+            let name = component.as_os_str().to_string_lossy();
+            if let Some(rest) = name.strip_prefix("usb") {
+                if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                    return Transport::Removable;
+                }
+            }
+            // Other removable transports, listed so the intent is explicit rather than implied.
+            for marker in ["mmc", "thunderbolt", "firewire"] {
+                if name.starts_with(marker) {
+                    return Transport::Removable;
+                }
+            }
+            for marker in ["nvme", "ata", "sata", "virtio"] {
+                if name.starts_with(marker) {
+                    return Transport::Fixed;
+                }
+            }
+        }
+        Transport::Unknown
+    }
+
+    /// Decide whether the backing device is removable **for the guard's purposes**.
+    ///
+    /// # Why the transport, and not `/sys/block/<dev>/removable`
+    ///
+    /// The kernel flag is **not** a usable proxy for "external". Measured on the maintainer's host:
+    ///
+    /// | device | transport | flag | actually external |
+    /// |---|---|---|---|
+    /// | `sda` | usb | `1` | yes (flash drive) |
+    /// | `sdb` | usb | **`0`** | **yes (500 GB enclosure)** |
+    /// | `nvme0n1` | nvme | `0` | no (internal root) |
+    ///
+    /// `sdb` and `nvme0n1` are indistinguishable by the flag, but only `sdb` is external. A USB enclosure
+    /// whose bridge presents a fixed disk reports `0`. So a **removable transport is authoritative**
+    /// (Founder decision, 2026-10-13), and the flag is kept as a **secondary** signal — a device on a
+    /// fixed transport that nevertheless reports `1` (e.g. a media slot) is accepted.
+    ///
+    /// This is **not** a weakening: the flag alone produced a **false refusal** for a legitimate external
+    /// drive. The check that matters — that an internal root disk is refused — still holds, because
+    /// `nvme` is a fixed transport.
+    ///
+    /// **Stated limitation, recorded with the feature:** a device soldered internally but attached over
+    /// USB cannot be distinguished from an external one, and is accepted. It is not detectable from sysfs.
+    /// Refusing every USB device to defend against it would reject every external drive.
+    fn is_removable_disk(disk: &str) -> Result<bool, DeviceReadError> {
+        match transport_of(disk) {
+            Transport::Removable => Ok(true),
+            Transport::Fixed => {
+                // A fixed transport may still report removable media (e.g. a card-reader slot).
+                Ok(removable_flag(disk).unwrap_or(false))
+            }
+            // Unknown transport: fall back to the flag, and if that is unreadable, fail closed rather
+            // than guess. An unfounded `Ok(false)` would refuse silently; an unfounded `Ok(true)` would
+            // accept a device we cannot characterise. Reporting the error is the honest third option.
+            Transport::Unknown => removable_flag(disk).ok_or(DeviceReadError::PropertyUnreadable),
         }
     }
 
@@ -312,6 +387,20 @@ pub(crate) struct RawDevice {
     pub(crate) partition: String,
     /// The whole-disk name, e.g. `sda` (serial and `removable` live here, not on the partition).
     pub(crate) disk: String,
+}
+
+/// How a device is attached, as far as removability is concerned.
+///
+/// Derived from the device path by [`platform::transport_of`], never from `lsblk` (G7 forbids host
+/// utilities in shipped code). See `platform::is_removable_disk` for why this exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Transport {
+    /// A transport whose devices are expected to be physically detachable: usb, mmc, thunderbolt, firewire.
+    Removable,
+    /// A transport whose devices are normally fixed: nvme, ata, sata, virtio.
+    Fixed,
+    /// Could not be determined from the device path. Callers must not assume either way.
+    Unknown,
 }
 
 /// Why a device could not be resolved or identified.
