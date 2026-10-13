@@ -41,6 +41,7 @@
 use core::marker::PhantomData;
 
 pub mod coredump;
+pub mod device;
 pub mod memory;
 
 /// Reason a memory-locking attempt failed.

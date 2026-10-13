@@ -60,6 +60,11 @@ src_dir = os.path.join(root, "tokengen-sys", "src")
 EXPECTED = {
     "memory.rs": 2,
     "coredump.rs": 2,
+    # F3.5's device module: the unix backend, the not(unix) stub, and the two
+    # per-branch constants in `component_of`. Counted by this gate, which refused
+    # to pass vacuously when the module was unregistered AND again when the count
+    # changed from 4 to 5 — the fail-loud guard doing its job twice.
+    "device.rs": 5,
 }
 
 files = sorted(glob.glob(os.path.join(src_dir, "*.rs")))
