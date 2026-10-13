@@ -43,9 +43,25 @@ fn serial() -> MutexGuard<'static, ()> {
     lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// The drop-path sequence expected **on this platform** (AM-004).
+///
+/// - On Unix a `Secret` locks successfully, so its drop must record zeroize **then** unlock:
+///   `(TAG_ZEROIZE, TAG_UNLOCK)`. This proves the ordering — the actual B3 guarantee.
+/// - On Windows there is no locking backend (`lock_range` returns `LockError::NotSupported`), so no
+///   handle is held and no unlock is recorded: `(TAG_ZEROIZE, TAG_NONE)`.
+///
+/// **Stated limitation, not hidden:** on Windows this assertion proves that zeroization happens and that
+/// no unlock is claimed — it does **not** prove ordering, because there is no lock to order against.
+/// Zeroize-before-unlock is unprovable on Windows until F3.7 supplies a real locking backend; G14/G15
+/// remain unmet there (F3 §14 W1). Do not cite this test as evidence that they hold.
+#[cfg(unix)]
+const EXPECTED_DROP_SEQUENCE: (usize, usize) = (TAG_ZEROIZE, TAG_UNLOCK);
+#[cfg(not(unix))]
+const EXPECTED_DROP_SEQUENCE: (usize, usize) = (TAG_ZEROIZE, TAG_NONE);
+
 /// The real drop path must record zeroize **before** unlock.
 ///
-/// This is the assertion that a reversed `Secret::drop` fails.
+/// This is the assertion that a reversed `Secret::drop` fails (on platforms that lock).
 #[test]
 fn drop_records_zeroize_before_unlock() {
     let _guard = serial();
@@ -59,8 +75,14 @@ fn drop_records_zeroize_before_unlock() {
     let (first, second) = hooks::sequence();
     assert_eq!(
         (first, second),
-        (TAG_ZEROIZE, TAG_UNLOCK),
-        "Secret::drop must zeroize before unlocking; recorded sequence was ({first}, {second})"
+        EXPECTED_DROP_SEQUENCE,
+        "Secret::drop must zeroize (and, where a lock exists, unlock after); \
+         recorded sequence was ({first}, {second})"
+    );
+    // Zeroization is asserted on every platform, unconditionally (G4).
+    assert_eq!(
+        first, TAG_ZEROIZE,
+        "zeroization must always be recorded first"
     );
 }
 
@@ -84,7 +106,8 @@ fn unlocked_secret_records_zeroize_and_no_unlock() {
     assert_eq!(second, TAG_NONE, "no unlock should be recorded");
 }
 
-/// A fixed-size array `Secret` follows the same ordering.
+/// A fixed-size array `Secret` follows the same ordering, on the same platform-dependent terms
+/// as `drop_records_zeroize_before_unlock` (AM-004).
 #[test]
 fn array_secret_follows_the_same_ordering() {
     let _guard = serial();
@@ -97,8 +120,14 @@ fn array_secret_follows_the_same_ordering() {
     let (first, second) = hooks::sequence();
     assert_eq!(
         (first, second),
-        (TAG_ZEROIZE, TAG_UNLOCK),
-        "array-backed Secret must zeroize before unlocking"
+        EXPECTED_DROP_SEQUENCE,
+        "array-backed Secret must follow the platform drop sequence; \
+         recorded sequence was ({first}, {second})"
+    );
+    // Zeroization is asserted on every platform, unconditionally (G4).
+    assert_eq!(
+        first, TAG_ZEROIZE,
+        "zeroization must always be recorded first"
     );
 }
 
