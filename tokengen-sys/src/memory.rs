@@ -78,9 +78,14 @@ mod platform {
                 _not_send: PhantomData,
             })
         } else {
-            // SAFETY: `__errno_location` returns a valid pointer to this thread's
-            // errno for the lifetime of the thread.
-            let errno = unsafe { *libc::__errno_location() };
+            // Portable errno read (AM-003). `std::io::Error::last_os_error()` reads this
+            // thread's errno and is available on every target, so no `unsafe` block and no
+            // per-platform branch is needed. It MUST be called immediately after the failing
+            // call above, before any other library call that could overwrite errno.
+            //
+            // If the OS error is unavailable, default to 0, which `classify` maps to
+            // `Other(0)` — an honest "unknown", never a specific cause that was not observed.
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             Err(classify(errno))
         }
     }
