@@ -139,9 +139,29 @@ PY
 
 echo "building with the non-Unix branches compiled..."
 cd "$WORK_DIR"
-if cargo build -p tokengen-sys 2>&1; then
-    echo "cfg-forcing check: PASS — every non-Unix branch compiles"
-else
+
+# Enforce the SAME strictness as CI. CI sets `RUSTFLAGS: -D warnings` and runs clippy with
+# `-D warnings`; this gate previously used a plain `cargo build`, so it reported PASS on a tree
+# CI would reject (DEFECT-002 D-2b). A gate whose PASS means less than CI's is not a gate.
+#
+# Two checks, matching CI's:
+#   1. build with warnings denied — catches dead_code/unused in the deferred branch
+#   2. clippy with warnings denied — catches lints the deferred branch would trip
+#
+# NOTE ON THE ONE LINT THAT MUST BE ALLOWED HERE. The inversion above rewrites
+# `#[cfg(unix)]` to `#[cfg(any())]` and `#[cfg(not(unix))]` to `#[cfg(all())]`. Clippy correctly
+# objects that those are non-minimal cfg expressions (`clippy::non_minimal_cfg`) — but that is an
+# artefact of THIS GATE'S METHOD, not a defect in the source. It is therefore allowed during the
+# clippy pass only, by name, so every other lint stays enforced. Silencing `-D warnings` wholesale
+# would have hidden the very defect (D-2a) this change exists to catch.
+export RUSTFLAGS="${RUSTFLAGS:-} -D warnings"
+if ! cargo build -p tokengen-sys 2>&1; then
     echo "cfg-forcing check: FAIL — a non-Unix branch does not compile" >&2
     exit 1
 fi
+if ! cargo clippy -p tokengen-sys --all-targets -- \
+    -D warnings -A clippy::non_minimal_cfg 2>&1; then
+    echo "cfg-forcing check: FAIL — a non-Unix branch does not pass clippy with warnings denied" >&2
+    exit 1
+fi
+echo "cfg-forcing check: PASS — every non-Unix branch compiles, warnings denied (matches CI)"

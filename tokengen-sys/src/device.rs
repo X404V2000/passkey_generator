@@ -47,8 +47,31 @@
 #[allow(unsafe_code)]
 mod platform {
     use crate::device::{
-        DeviceDescriptor, DeviceIdentity, DeviceReadError, IdentityComponent, RawDevice, Transport,
+        DeviceDescriptor, DeviceIdentity, DeviceReadError, IdentityComponent, RawDevice,
     };
+
+    /// How a device is attached, as far as removability is concerned.
+    ///
+    /// Declared **inside the Unix platform module**, not at crate level, because it is only ever
+    /// produced and consumed here. On a target with no backend it does not exist at all — which is why
+    /// it is not dead code waiting for an `#[allow]`.
+    ///
+    /// This placement is deliberate and was forced by a real defect (DEFECT-002 D-2a): a crate-level
+    /// enum that only the Unix backend referenced became **dead code on the inverted build**, which
+    /// `-D warnings` turns into a compile error — while the gate passed, because it did not deny
+    /// warnings. Scoping the type to where it is used fixes the cause rather than silencing the lint.
+    ///
+    /// Note the form matters: `#[cfg_attr(not(unix), allow(dead_code))]` does **not** work, because
+    /// `scripts/cfg_check.sh` inverts `#[cfg(...)]` **textually** and leaves `cfg_attr` alone.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Transport {
+        /// A transport whose devices are expected to be physically detachable: usb, mmc, thunderbolt, firewire.
+        Removable,
+        /// A transport whose devices are normally fixed: nvme, ata, sata, virtio.
+        Fixed,
+        /// Could not be determined from the device path. Callers must not assume either way.
+        Unknown,
+    }
     use std::ffi::CString;
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
@@ -387,20 +410,6 @@ pub(crate) struct RawDevice {
     pub(crate) partition: String,
     /// The whole-disk name, e.g. `sda` (serial and `removable` live here, not on the partition).
     pub(crate) disk: String,
-}
-
-/// How a device is attached, as far as removability is concerned.
-///
-/// Derived from the device path by [`platform::transport_of`], never from `lsblk` (G7 forbids host
-/// utilities in shipped code). See `platform::is_removable_disk` for why this exists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Transport {
-    /// A transport whose devices are expected to be physically detachable: usb, mmc, thunderbolt, firewire.
-    Removable,
-    /// A transport whose devices are normally fixed: nvme, ata, sata, virtio.
-    Fixed,
-    /// Could not be determined from the device path. Callers must not assume either way.
-    Unknown,
 }
 
 /// Why a device could not be resolved or identified.
