@@ -89,9 +89,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # `rustsec/audit-check@v2` is NOT used: it always installs the latest cargo-audit, which
+      # requires rustc >= 1.88, while this project pins 1.85.1 (the trybuild .stderr snapshots are
+      # version-sensitive — see CI-001_design.md §4). The action offers no input to pin the tool,
+      # so the incompatibility is structural, not a version-of-the-action issue.
+      #
+      # Instead we install a KNOWN-COMPATIBLE cargo-audit explicitly. 0.22.1 is the last release
+      # supporting rustc 1.85 (cargo reports this itself when 0.22.2 is attempted). Pinned for the
+      # same reason the toolchain is pinned: an unpinned security tool can change its verdict
+      # without any change to this repository.
+      #
+      # `--locked` on the install keeps the tool's own dependency set fixed.
+      - name: Install cargo-audit (pinned to the rustc-1.85-compatible release)
+        run: cargo install cargo-audit --version 0.22.1 --locked
+
+      # NOTE: this step has NEVER RUN in a green state. Until it does, the dependency audit is
+      # NOT RUN — not "clean". Do not cite a passing CI run as evidence of an audit until this
+      # step is observed to execute and report.
+      - name: cargo audit
+        run: cargo audit
 
   # ---------------------------------------------------------------------------------------------
   # MSRV: the declared rust-version (1.75) must actually build.
