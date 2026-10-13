@@ -111,18 +111,27 @@ jobs:
         run: cargo audit
 
   # ---------------------------------------------------------------------------------------------
-  # MSRV: the declared rust-version (1.75) must actually build.
+  # MSRV: the declared rust-version must actually build.
+  #
+  # The declared value is 1.85 (see AM-005 / DEFECT-001 D3). It was previously 1.75, which was FALSE:
+  # `zeroize` 1.9.0 requires edition 2024, unsupported by Cargo 1.75, and it arrived by drift on the
+  # unpinned `zeroize = "1"` caret requirement. This job exists so the declaration cannot be false
+  # without CI saying so.
+  #
   # This job builds ONLY — it does not run the test suite. The trybuild .stderr snapshots are
-  # produced on the pinned 1.85.1 toolchain and cannot match on 1.75. See CI-001_design.md §5.
+  # produced on the pinned 1.85.1 toolchain and are version-sensitive (CI-001_design.md §5).
   # ---------------------------------------------------------------------------------------------
   msrv:
-    name: MSRV (1.75)
+    name: MSRV (1.85)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install MSRV toolchain
-        run: rustup toolchain install 1.75 --profile minimal
+        run: rustup toolchain install 1.85 --profile minimal
 
+      # Builds the library only. Dev-dependencies (trybuild -> indexmap -> hashbrown) also require
+      # edition 2024, so `--all-targets` would drag in the test harness; the shipped MSRV is what
+      # this job asserts, and that is the library and its normal dependencies.
       - name: Build on MSRV (locked)
-        run: cargo +1.75 build --locked
+        run: cargo +1.85 build --locked

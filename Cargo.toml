@@ -15,7 +15,15 @@ panic          = "deny"
 name = "tokengen"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+# Minimum supported Rust version.
+#
+# This is a MEASURED value, not an aspiration. It is 1.85 because a direct dependency requires it:
+# `zeroize` 1.9.0 declares `edition = "2024"` and `rust-version = "1.85"` (1.8.2 was edition 2021 /
+# rust-version 1.60). The previous claim of 1.75 was false and had been since `zeroize = "1"` drifted
+# forward on an unpinned caret requirement — see AM-005 and DEFECT-001 D3.
+#
+# If you change this, change the MSRV CI job to match, and re-derive the value by building.
+rust-version = "1.85"
 publish = false
 
 [lib]

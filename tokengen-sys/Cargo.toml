@@ -2,7 +2,9 @@
 name = "tokengen-sys"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+# Minimum supported Rust version. Measured, not aspirational — 1.85, driven by `zeroize` 1.9.0
+# (edition 2024). Kept in step with the main crate. See AM-005 / DEFECT-001 D3.
+rust-version = "1.85"
 publish = false
 description = "Platform FFI for TokenGen: memory locking and core-dump disabling. The only crate in this workspace permitted to contain `unsafe`."
 
