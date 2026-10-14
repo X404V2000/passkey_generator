@@ -83,7 +83,17 @@ pub struct DeviceIdentity {
 }
 
 /// The result of a guard check. **Every variant except `Present` is abort-worthy** (§5.2).
+/// ## On `Debug`
+///
+/// Derived deliberately, following F3's `MemoryLockStatus`. Everything this type carries is a **device
+/// property** — a filesystem UUID and a hardware serial — which this project documents as **not secret**
+/// (G9 does not apply to it, stated rather than left to inference). Redaction is therefore unnecessary
+/// here, and *structural*: no variant can hold key material, because none holds a `Secret<T>`.
+///
+/// `Clone` is not derived: the type carries two `String`s, so a clone is a real allocation, and nothing
+/// needs one.
 #[must_use]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum GuardStatus {
     /// The bound device is present and its identity matches.
@@ -155,18 +165,37 @@ pub enum SessionError {
 /// implementation rather than a test-only back door, and so the platform error type is mapped to
 /// [`SessionError`] before it reaches a caller.
 pub trait DeviceReader {
+    /// The reader's own **device token** — whatever a successful resolution produces.
+    ///
+    /// This is an associated type rather than a fixed `ResolvedDevice` so that a reader owns its
+    /// representation. The real reader's token is [`ResolvedDevice`] (opaque, constructible only by a
+    /// successful `resolve`); a test reader defines its own, so it can drive the guard without a
+    /// test-only constructor ever entering the public API.
+    ///
+    /// **No `Clone` bound, deliberately.** `check` binds the token by value from `resolve` and passes
+    /// `&device` to `identify`; no copy is taken. Requiring `Clone` would force it onto a token that
+    /// carries a device identity — the same reasoning that leaves F3's `LockHandle` non-`Clone`, since a
+    /// duplicable handle makes "the lock is held once" a property of a copy rather than of the state.
+    ///
+    /// Nor is there a `Debug` bound: a real token holds the device path, and rendering it would print
+    /// *where the tool ran* into a log (see [`ResolvedDevice`]).
+    ///
+    /// The bound is left off rather than written as `Device: Sized` so a reader may use a reference or a
+    /// zero-sized marker type without ceremony.
+    type Device;
+
     /// Resolve a path to the **device** backing it.
     ///
     /// # Errors
     /// Fails closed: a non-removable backing device, a missing device, or an unsupported target all
     /// produce an error rather than a plausible success.
-    fn resolve(&self, path: &Path) -> Result<ResolvedDevice, SessionError>;
+    fn resolve(&self, path: &Path) -> Result<Self::Device, SessionError>;
 
     /// Read the identity of a resolved device.
     ///
     /// # Errors
     /// Returns `Err` if either component cannot be read. A partial identity is never returned.
-    fn identify(&self, device: &ResolvedDevice) -> Result<DeviceIdentity, SessionError>;
+    fn identify(&self, device: &Self::Device) -> Result<DeviceIdentity, SessionError>;
 }
 
 /// An opaque, resolved device, as seen by the guard.
@@ -177,6 +206,24 @@ pub trait DeviceReader {
 pub struct ResolvedDevice {
     /// Platform handle. Private so no caller can fabricate a device or depend on its layout.
     inner: tokengen_sys::device::DeviceDescriptor,
+}
+
+/// A shared reader is a reader.
+///
+/// This impl exists so a caller (and the test suite) can hold the same reader instance the guard owns —
+/// without which a device could not be changed out from under a live guard, which is precisely the swap
+/// scenario the feature detects. It must live in this crate: the orphan rule forbids a test crate from
+/// implementing our trait for `Rc`.
+impl<T: DeviceReader + ?Sized> DeviceReader for std::rc::Rc<T> {
+    type Device = T::Device;
+
+    fn resolve(&self, path: &Path) -> Result<Self::Device, SessionError> {
+        (**self).resolve(path)
+    }
+
+    fn identify(&self, device: &Self::Device) -> Result<DeviceIdentity, SessionError> {
+        (**self).identify(device)
+    }
 }
 
 /// The real reader: delegates to `tokengen-sys`, mapping its error type to [`SessionError`].
@@ -221,6 +268,8 @@ fn map_error(err: tokengen_sys::device::DeviceReadError) -> SessionError {
 }
 
 impl DeviceReader for SystemDeviceReader {
+    type Device = ResolvedDevice;
+
     fn resolve(&self, path: &Path) -> Result<ResolvedDevice, SessionError> {
         tokengen_sys::device::resolve(path)
             .map(|inner| ResolvedDevice { inner })
