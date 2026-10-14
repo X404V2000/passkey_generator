@@ -77,6 +77,33 @@ mod platform {
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
 
+    /// Widen a `dev_t` to `u64`.
+    ///
+    /// `dev_t` is **`u64` on Linux and `i32` on macOS** (measured: `libc` declares `pub type dev_t = i32`
+    /// for apple targets). Returning it directly from a `u64` function is what failed the macOS build
+    /// (`error[E0308]`, DEFECT-003).
+    ///
+    /// This exists as a named function rather than an inline `as u64` for a specific reason: on Linux the
+    /// cast is a no-op, clippy flags it as `unnecessary_cast`, and a future contributor would delete it —
+    /// silently breaking macOS, where it is load-bearing. One named place, one comment, one reason.
+    ///
+    /// The widening is lossless for every device number either platform produces; `dev_t` is unsigned in
+    /// practice on both.
+    ///
+    /// # Why this one lint is allowed, and only here
+    ///
+    /// On Linux the cast is a no-op, and clippy correctly calls it `unnecessary_cast`. On macOS it is
+    /// **required**. No single form satisfies both without an allowance — that is the nature of a
+    /// platform-dependent type alias.
+    ///
+    /// The allowance is scoped to this function, is named, and carries this reasoning, so it cannot be
+    /// mistaken for a blanket suppression. A crate-wide `-A` would also hide a genuinely unnecessary cast
+    /// elsewhere. **This is the narrowest form that keeps macOS compiling and Linux lint-clean.**
+    #[allow(clippy::unnecessary_cast)]
+    fn dev_t_to_u64(dev: libc::dev_t) -> u64 {
+        dev as u64
+    }
+
     /// glibc's `major()`: the high bits above the 8-bit minor field.
     ///
     /// Written out rather than borrowed from a crate — it is three operations, and the project's
@@ -133,13 +160,25 @@ mod platform {
 
         // `st_dev` first: for a mounted filesystem path this is the backing device, and that is the
         // common case — `cwd` is a directory on a mount.
-        let from_st_dev = (major(st.st_dev), minor(st.st_dev));
+        // `st_dev` is `dev_t`, which is **u64 on Linux and i32 on macOS** — a real difference this
+        // function must not assume away. It goes through `dev_t_to_u64` so the widening happens in one
+        // named place: an inline `as u64` here would be flagged by clippy on Linux (where it is a cast
+        // to the same type) and removed by a future contributor, silently breaking macOS again.
+        // Same shape as D2: a Unix-family cfg assumption that is not uniform across Unix.
+        let from_st_dev = (
+            major(dev_t_to_u64(st.st_dev)),
+            minor(dev_t_to_u64(st.st_dev)),
+        );
         if sysfs_block_exists(from_st_dev) {
             return Ok(from_st_dev);
         }
 
         // Otherwise the path is a device node: its own device is `st_rdev`.
-        let from_st_rdev = (major(st.st_rdev), minor(st.st_rdev));
+        // Same widening, same reason (see above): `st_rdev` is also `dev_t`.
+        let from_st_rdev = (
+            major(dev_t_to_u64(st.st_rdev)),
+            minor(dev_t_to_u64(st.st_rdev)),
+        );
         if sysfs_block_exists(from_st_rdev) {
             return Ok(from_st_rdev);
         }
