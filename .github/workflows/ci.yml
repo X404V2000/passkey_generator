@@ -93,25 +93,41 @@ jobs:
       #   2. in src/session.rs, that enabling it requires an explicit build-time acknowledgement.
       # A binary that reported `Disabled` where a user expected `Present` is the false-assurance class
       # this project treats as its worst defect, so the rule is not left to trust.
+      # Shell-agnostic: this runs under bash on Linux/macOS and PowerShell on Windows, so it uses a
+      # single `cargo metadata | python3 -c` pipeline with NO shell `if`, no line continuation, and no
+      # `exit` — the earlier version used bash syntax and failed to parse on Windows (DEFECT-005).
+      #
+      # The Python exits non-zero when `dev-mode` is absent from `default`, which is the desired state;
+      # so the step FAILS when the exit is ZERO. That inversion is the point, and it is written as an
+      # explicit comparison rather than a shell conditional so it reads the same on every runner.
       - name: dev-mode must be absent from the default feature set
+        shell: bash
         run: |
-          if cargo metadata --format-version 1 --no-deps \
-             | python3 -c "
-          import json, sys
-          d = json.load(sys.stdin)
-          for p in d['packages']:
-              if p['name'] == 'tokengen':
-                  sys.exit(0 if 'dev-mode' in p['features'].get('default', []) else 1)
-          sys.exit(1)   # crate not found: treat as failure, not success
-          "; then
-            echo "FATAL: dev-mode IS in the default feature set" >&2
-            exit 1
-          fi
-          echo "OK: dev-mode is absent from the default feature set"
+          python3 - <<'PYEOF'
+          import json, subprocess, sys
+          out = subprocess.run(
+              ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+              capture_output=True, text=True, check=True,
+          ).stdout
+          default = None
+          for pkg in json.loads(out)["packages"]:
+              if pkg["name"] == "tokengen":
+                  default = pkg["features"].get("default", [])
+          if default is None:
+              print("FATAL: crate `tokengen` not found in metadata; treating as failure", file=sys.stderr)
+              sys.exit(1)
+          if "dev-mode" in default:
+              print(f"FATAL: dev-mode IS in the default feature set: {default}", file=sys.stderr)
+              sys.exit(1)
+          print(f"OK: dev-mode is absent from the default feature set (default = {default})")
+          PYEOF
 
       # The acknowledgement check must itself be shown to discriminate: enabling dev-mode WITHOUT the
       # variable must fail to compile. A guard that cannot fail is not a guard.
+      # Same shell-agnostic treatment as the step above: `shell: bash` is pinned so the `if` and the
+      # redirect are portable, rather than relying on the runner's default shell (PowerShell on Windows).
       - name: dev-mode without acknowledgement must FAIL to build
+        shell: bash
         run: |
           if cargo build --features dev-mode >/dev/null 2>&1; then
             echo "FATAL: dev-mode built without TOKENGEN_DEV_MODE_ACK — the guard does not discriminate" >&2
