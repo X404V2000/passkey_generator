@@ -36,11 +36,25 @@
 //!
 //! # Fail closed
 //!
-//! Non-Unix targets have no backend in this revision and return `NotSupported` — **never** a plausible
-//! `Ok`. A stub that reported success would make the guard's `Present` status a lie, which is the
-//! false-assurance class this project treats as its worst defect.
+//! **Linux only, in this revision.** Every other target — macOS and Windows included — has no backend and
+//! returns `NotSupported`, **never** a plausible `Ok`. A stub that reported success would make the guard's
+//! `Present` status a lie, which is the false-assurance class this project treats as its worst defect.
+//!
+//! The gate is `target_os = "linux"`, not `unix`. See the note at the backend module for why: `cfg(unix)`
+//! is true on macOS, which previously compiled a backend whose `/sys` lookups cannot work (DEFECT-008).
 
-#[cfg(unix)]
+// LINUX ONLY, and the gate is `target_os`, not `unix`.
+//
+// This backend reads `/sys/dev/block` and `/sys/block/<dev>/…`, which are **Linux** facilities. An earlier
+// revision gated it `#[cfg(unix)]`, which is true on macOS — so macOS compiled this module and every
+// resolution failed at `fs::canonicalize("/sys/dev/block/…")`, reporting **`DeviceNotFound`**. That asserts
+// "the device you named does not exist", which is false: on macOS `/` exists and the *lookup mechanism* is
+// what is missing. A caller was told the wrong cause (DEFECT-008).
+//
+// `cfg(unix)` has now stood for "Linux" three times in this feature, each time wrongly — a symbol
+// (D2 `__errno_location`), a type (D3 `dev_t`), and a filesystem mechanism (D-8 `/sys`). Gating on
+// `target_os` states the real claim, and the compiler enforces it rather than a runtime probe.
+#[cfg(target_os = "linux")]
 // The `unsafe` opt-out for this module. Confined here and to `crate::memory` and `crate::coredump`; every
 // `unsafe` block inside carries a `// SAFETY:` justification. The main `tokengen` crate cannot acquire this
 // allowance — its root uses `forbid`, which no module can relax (verified: `error[E0453]`).
@@ -445,11 +459,16 @@ mod platform {
     }
 }
 
-/// Targets with no backend in this revision. Fail closed.
+/// Every target that is not Linux. Fail closed.
+///
+/// **This is the macOS and Windows path** — not only the exotic ones. F3.5 supports Linux only (W1/W2; the
+/// other platforms are F3.7), so on macOS and Windows the honest answer is `NotSupported`, which says
+/// "this platform has no backend". The previous `#[cfg(unix)]` split made macOS take the Linux backend and
+/// report `DeviceNotFound` instead — a specific, false cause (DEFECT-008).
 ///
 /// Returning `Err(NotSupported)` — never `Ok` — is deliberate: a stub that reported success would make the
 /// caller's `Present` status a lie and leave G16/G17 silently unmet. See F3.5 §6.3 and §10.2 (W1, W2).
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 mod platform {
     use crate::device::{DeviceDescriptor, DeviceIdentity, DeviceReadError, RawDevice};
     use std::path::Path;
@@ -513,7 +532,7 @@ pub enum DeviceReadError {
     NotRemovable,
     /// No backend for this target. Always fail closed.
     ///
-    /// Constructed only by the `#[cfg(not(unix))]` stub, so on a Unix build it is never built — which is
+    /// Constructed only by the non-Linux stub, so on a Linux build it is never built — which is
     /// correct, not dead code. `#[allow]` here rather than on the enum, so the other variants stay checked.
     #[allow(dead_code)]
     NotSupported,
@@ -593,9 +612,12 @@ pub fn component_of(err: &DeviceReadError) -> Option<IdentityComponent> {
     // On a target with no backend there is nothing to map: the caller receives `NotSupported` and reports
     // the guard as unsupported rather than unverifiable. Kept as one expression so neither branch needs an
     // early `return`, which the workspace lints deny.
-    #[cfg(unix)]
+    // `target_os = "linux"`, matching the backend gate: on macOS the backend is the stub, so the mapping
+    // must come from the stub too. Leaving these as `cfg(unix)` would have compiled the Linux mapping
+    // against a stub that does not define it.
+    #[cfg(target_os = "linux")]
     let component = platform::component_of(err);
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     let component = {
         let _ = err;
         None

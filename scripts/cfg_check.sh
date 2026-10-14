@@ -4,7 +4,7 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# `tokengen-sys` has `#[cfg(unix)]` backends and `#[cfg(not(unix))]` stubs. On a
+# `tokengen-sys` has platform backends behind `cfg` gates. On a
 # Linux host the compiler never looks at the stubs, so their signatures can drift
 # from their callers without any gate noticing. That happened once already: a
 # stub's `lock_range` kept a `&mut [u8]` parameter after the callers moved to
@@ -52,44 +52,71 @@ import sys
 root = sys.argv[1]
 src_dir = os.path.join(root, "tokengen-sys", "src")
 
-# Invert every `#[cfg(unix)]` -> `#[cfg(any())]` and
-# `#[cfg(not(unix))]` -> `#[cfg(all())]` in the platform modules.
+# Invert every platform gate so the DEFERRED branch is the one that compiles:
+#   #[cfg(unix)] / #[cfg(target_os = "linux")]        -> #[cfg(any())]
+#   #[cfg(not(unix))] / #[cfg(not(target_os = "linux"))] -> #[cfg(all())]
+# Only real attribute lines are matched -- see the note above the loop.
 #
 # The count is checked per file: if a file that should contain both branches has
 # fewer than expected, this fails loudly rather than silently under-checking.
 EXPECTED = {
     "memory.rs": 2,
     "coredump.rs": 2,
-    # F3.5's device module: the unix backend, the not(unix) stub, and the two
-    # per-branch constants in `component_of`. Counted by this gate, which refused
-    # to pass vacuously when the module was unregistered AND again when the count
-    # changed from 4 to 5 — the fail-loud guard doing its job twice.
-    "device.rs": 5,
+    # F3.5's device module: the Linux backend, the non-Linux stub, and the two
+    # per-branch `let component` bindings in `component_of`. Counted by this gate.
+    #
+    # The count was previously 5, and that 5 was WRONG: the gate's old whole-file
+    # `str.replace` counted gate strings appearing in COMMENTS, so prose inflated
+    # the total while the real gates were left un-inverted. The gate was reporting
+    # on a tree it had not modified. Now only attribute lines are matched, and the
+    # honest count is 4.
+    "device.rs": 4,
 }
 
 files = sorted(glob.glob(os.path.join(src_dir, "*.rs")))
 inverted = 0
 seen = {}
-# Files that contain ANY `cfg(unix)`/`cfg(not(unix))` gate, regardless of whether
+# Files that contain ANY recognised platform gate, regardless of whether
 # we understand them. Used to detect a module the coverage map does not know
 # about -- a module that is present in the tree but absent from EXPECTED.
 gated = set()
 
+# The gates matched are the ATTRIBUTE FORMS, and only where they are real code.
+#
+# An earlier revision used a plain `text.replace(...)` over the whole file, so a gate string appearing in a
+# COMMENT was counted as a gate and inverted. Two consequences, both observed:
+#   * the count could be inflated by prose, so `EXPECTED` agreed for the wrong reason (DEFECT-003 and
+#     again with the `target_os` change: five real gates, five prose mentions, indistinguishable);
+#   * the real gates were left UNINVERTED while the prose was inverted, so the gate reported on a tree it
+#     had not actually modified — testing nothing, which is the failure this gate exists to prevent.
+#
+# So each line is classified: a gate is a line whose content (after stripping whitespace) is exactly the
+# attribute, and which is not a comment. A trailing comment after the attribute is not tolerated, because
+# the codebase does not write them and a stricter rule fails loudly rather than under-checking.
+GATE_TO_INVERSE = {
+    "#[cfg(unix)]": "#[cfg(any())]",
+    "#[cfg(not(unix))]": "#[cfg(all())]",
+    "#[cfg(target_os = \"linux\")]": "#[cfg(any())]",
+    "#[cfg(not(target_os = \"linux\"))]": "#[cfg(all())]",
+}
+
 for path in files:
     name = os.path.basename(path)
-    text = open(path).read()
-    before = text
+    lines = open(path).read().splitlines(keepends=True)
+    out = []
+    n = 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped in GATE_TO_INVERSE:
+            out.append(line.replace(stripped, GATE_TO_INVERSE[stripped]))
+            n += 1
+        else:
+            out.append(line)
 
-    if "#[cfg(unix)]" in text or "#[cfg(not(unix))]" in text:
-        gated.add(name)
-
-    text = text.replace("#[cfg(unix)]", "#[cfg(any())]")
-    text = text.replace("#[cfg(not(unix))]", "#[cfg(all())]")
-
-    if text == before:
+    if n == 0:
         continue
 
-    n = text.count("#[cfg(any())]") + text.count("#[cfg(all())]")
+    gated.add(name)
     seen[name] = n
 
     if name in EXPECTED and n != EXPECTED[name]:
@@ -99,7 +126,7 @@ for path in files:
             f"rather than letting this gate under-check."
         )
 
-    open(path, "w").write(text)
+    open(path, "w").write("".join(out))
     inverted += n
     print(f"  inverted {n} gate(s) in {name}")
 
@@ -128,7 +155,7 @@ if missing:
 uncovered = sorted(gated - set(EXPECTED))
 if uncovered:
     sys.exit(
-        f"FATAL: module(s) contain cfg(unix)/cfg(not(unix)) gates but are NOT in "
+        f"FATAL: module(s) contain platform cfg gates but are NOT in "
         f"EXPECTED: {uncovered}. Add each with its expected gate count, or this "
         f"gate does not cover them."
     )
