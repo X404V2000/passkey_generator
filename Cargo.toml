@@ -40,6 +40,14 @@ workspace = true
 # assertion in `tests/zeroize_ordering.rs`.
 test-hooks = ["tokengen-sys/test-hooks"]
 
+# F3.5 §11: compiles the session guard OFF. Deliberately NOT in `default`, and it must never be
+# enabled in a release build. Under this feature `capture()` returns `GuardStatus::Disabled` —
+# a distinguishable status, never a silent `Present`.
+#
+# A compile-time feature, not an environment variable: a guard disableable by ambient configuration
+# is a guard whose central guarantee is conditional (G1).
+dev-mode = []
+
 [dependencies]
 getrandom    = "0.2"
 zeroize      = "1"

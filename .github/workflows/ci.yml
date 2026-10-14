@@ -75,6 +75,50 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      # F3.5 §11: `dev-mode` is a cfg path, and a cfg path that is never compiled is not covered
+      # (corollary: compilation targets are coverage). It must build AND lint clean under the feature,
+      # and its test must run.
+      - name: dev-mode build, lint and test
+        # TOKENGEN_DEV_MODE_ACK is required by a compile-time check in src/session.rs: enabling
+        # dev-mode without an explicit acknowledgement fails the build, so a release build cannot
+        # acquire the guard-disabling path by accident.
+        env:
+          TOKENGEN_DEV_MODE_ACK: "1"
+        run: |
+          cargo clippy --all-targets --features dev-mode -- -D warnings
+          cargo test --release --locked --features dev-mode
+
+      # F3.5 §11 requires `dev-mode` to be absent from a release build. Enforced mechanically, twice:
+      #   1. here, that it is not in the `default` feature set;
+      #   2. in src/session.rs, that enabling it requires an explicit build-time acknowledgement.
+      # A binary that reported `Disabled` where a user expected `Present` is the false-assurance class
+      # this project treats as its worst defect, so the rule is not left to trust.
+      - name: dev-mode must be absent from the default feature set
+        run: |
+          if cargo metadata --format-version 1 --no-deps \
+             | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          for p in d['packages']:
+              if p['name'] == 'tokengen':
+                  sys.exit(0 if 'dev-mode' in p['features'].get('default', []) else 1)
+          sys.exit(1)   # crate not found: treat as failure, not success
+          "; then
+            echo "FATAL: dev-mode IS in the default feature set" >&2
+            exit 1
+          fi
+          echo "OK: dev-mode is absent from the default feature set"
+
+      # The acknowledgement check must itself be shown to discriminate: enabling dev-mode WITHOUT the
+      # variable must fail to compile. A guard that cannot fail is not a guard.
+      - name: dev-mode without acknowledgement must FAIL to build
+        run: |
+          if cargo build --features dev-mode >/dev/null 2>&1; then
+            echo "FATAL: dev-mode built without TOKENGEN_DEV_MODE_ACK — the guard does not discriminate" >&2
+            exit 1
+          fi
+          echo "OK: dev-mode without acknowledgement refuses to build"
+
       # Compiles every cfg branch (the F3 lesson: a branch no gate compiles can drift silently).
       # bash is available on all three runners, including Windows (Git Bash).
       - name: cfg-forcing compile check
