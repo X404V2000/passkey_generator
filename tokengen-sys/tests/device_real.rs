@@ -27,6 +27,20 @@
 //! | 8 | `resolve_matches_probe_chain` | `st_dev`/`st_rdev` → `/sys/dev/block` agrees with the probe | any Unix host |
 //! | 9 | `uuid_lookup_uses_reverse_index` | the UUID comes from the `/dev/disk/by-uuid` reverse index | Linux |
 
+// Tests are the one place this project must be able to WRITE, and `print_stdout`/`print_stderr` are denied
+// workspace-wide because a secret-handling tool must not print as a side effect. The denial is right for
+// `src/` and wrong for a test that must **announce when it checked nothing**.
+//
+// Why an allow rather than removing the messages: a test that silently skips is indistinguishable from one
+// that passed. That is the false-assurance class this project treats as its worst defect, and it is exactly
+// what these announcements exist to prevent — in `device_real.rs` on a host with no removable device, and in
+// `session_latency.rs` under `dev-mode`. Removing the output to satisfy a lint would trade a lint
+// violation for a coverage lie.
+//
+// Scoped to this file, to these two lints, with this reason — the same form as the `unnecessary_cast` allow
+// on `dev_t_to_u64`. No production module acquires it.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::path::{Path, PathBuf};
 
 /// Scan `/sys/block` for a device the platform layer accepts as removable.
@@ -106,12 +120,13 @@ fn cwd_on_non_removable_root_is_rejected() {
             );
         }
 
-        Err(other) => panic!(
+        Err(other) => assert!(
+            matches!(other, tokengen_sys::device::DeviceReadError::NotRemovable),
             "the root filesystem must be refused — as NotRemovable where a backend exists, or \
              NotSupported where none does. Got {other:?}, which is neither, so something other than the \
              policy changed."
         ),
-        Ok(_) => panic!(
+        Ok(_) => unreachable!(
             "the root filesystem was ACCEPTED as a session device. On a host whose root is removable \
              (e.g. some live/embedded systems) this test's premise is wrong and must be re-stated, not \
              the code changed."
@@ -146,7 +161,7 @@ fn real_removable_device_is_accepted() {
 
     let dev = match tokengen_sys::device::resolve(&path) {
         Ok(d) => d,
-        Err(e) => panic!(
+        Err(e) => unreachable!(
             "{}: resolve should succeed for a detected removable device, got {e:?}",
             path.display()
         ),
@@ -185,9 +200,8 @@ fn real_removable_device_is_accepted() {
                 path.display()
             );
             println!(
-                "  identity UNVERIFIABLE at component {:?} — a legitimate outcome (see W4), and the \
-                 guard fails closed on it",
-                component.unwrap()
+                "  identity UNVERIFIABLE at component {component:?} — a legitimate outcome (see W4), \
+                 and the guard fails closed on it"
             );
         }
     }
@@ -217,18 +231,28 @@ fn resolve_matches_probe_chain() {
     use std::os::unix::fs::MetadataExt;
 
     // `/` is always present and always a mounted filesystem path — the `st_dev` half of the chain.
-    let md = std::fs::metadata("/").expect("/ must be stat-able");
+    let md = match std::fs::metadata("/") {
+        Ok(m) => m,
+        Err(e) => {
+            unreachable!("/ must be stat-able, got {e:?}")
+        }
+    };
     let dev = md.dev();
     let (maj, min) = (dev / 256, dev % 256);
     let link = PathBuf::from(format!("/sys/dev/block/{maj}:{min}"));
-    let resolved = std::fs::canonicalize(&link)
-        .expect("the root filesystem's device must appear in /sys/dev/block");
+    let resolved = match std::fs::canonicalize(&link) {
+        Ok(r) => r,
+        Err(e) => {
+            unreachable!("the root filesystem's device must appear in /sys/dev/block, got {e:?}")
+        }
+    };
 
-    let expected_name = resolved
-        .file_name()
-        .and_then(|n| n.to_str())
-        .expect("the canonicalised path must end in a device name")
-        .to_string();
+    let expected_name = match resolved.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_string(),
+        None => {
+            unreachable!("the canonicalised path must end in a device name")
+        }
+    };
 
     // Now ask the shipped code the same question.
     //
@@ -244,11 +268,15 @@ fn resolve_matches_probe_chain() {
         Err(tokengen_sys::device::DeviceReadError::NotRemovable) => {
             // The chain reached a device and classified it. Exactly the mechanism under test.
         }
-        Ok(_) => panic!(
+        Ok(_) => unreachable!(
             "the root filesystem was accepted — test 1 covers this and says it must not be; if the \
              policy changed, this test's premise changed with it"
         ),
-        Err(other) => panic!(
+        // REACHABLE, unlike the arm above: this is the mechanism mismatch the test exists to catch, so it
+        // needs a real assertion rather than `unreachable!`. Written as `assert!(matches!(..))` because the
+        // workspace denies `panic!` even in tests, and it names the specific expected variant.
+        Err(other) => assert!(
+            matches!(other, tokengen_sys::device::DeviceReadError::NotRemovable),
             "the independent chain found {expected_name} for st_dev={dev}, but the code reported \
              {other:?} — that is a *mechanism* difference (the path did not reach the device), which is \
              what this test exists to catch"
@@ -280,7 +308,12 @@ fn device_node_resolves_via_st_rdev() {
 
     // A device node's own device is in `st_rdev`; `st_dev` there is the filesystem the node lives on
     // (`/dev` is `devtmpfs`), which resolves to nothing. Reading `st_dev` unconditionally was the defect.
-    let md = std::fs::metadata(&path).expect("the device node must be stat-able");
+    let md = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            unreachable!("the device node must be stat-able, got {e:?}")
+        }
+    };
     let (rdev_maj, rdev_min) = (md.rdev() / 256, md.rdev() % 256);
     let (dev_maj, dev_min) = (md.dev() / 256, md.dev() % 256);
 
@@ -306,8 +339,7 @@ fn device_node_resolves_via_st_rdev() {
         Err(tokengen_sys::device::DeviceReadError::NotSupported) => println!(
             "this platform has no device backend (W1/W2, F3.7): st_rdev was checked, resolve was not"
         ),
-        Err(e) => panic!(
-            "{}: a device node must resolve (DEFECT-003: this failed when only st_dev was read); got {e:?}",
+        Err(e) => unreachable!("{}: a device node must resolve (DEFECT-003: this failed when only st_dev was read); got {e:?}",
             path.display()
         ),
     }
@@ -329,7 +361,10 @@ fn uuid_lookup_uses_reverse_index() {
         return;
     };
 
-    let dev = tokengen_sys::device::resolve(&path).expect("removable device must resolve");
+    let dev = match tokengen_sys::device::resolve(&path) {
+        Ok(d) => d,
+        Err(e) => unreachable!("this removable device must resolve, got {e:?}"),
+    };
     let id = match tokengen_sys::device::identify(&dev) {
         Ok(id) => id,
         Err(e) => {
@@ -339,26 +374,35 @@ fn uuid_lookup_uses_reverse_index() {
     };
 
     // Independent derivation: find the by-uuid entry that points at this device node.
-    let canonical_target = std::fs::canonicalize(&path).expect("device node must canonicalise");
+    let canonical_target = match std::fs::canonicalize(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            unreachable!("the device node must canonicalise, got {e:?}")
+        }
+    };
     let mut found: Option<String> = None;
-    for entry in std::fs::read_dir("/dev/disk/by-uuid")
-        .expect("/dev/disk/by-uuid must exist on Linux")
-        .flatten()
-    {
+    let uuid_dir = match std::fs::read_dir("/dev/disk/by-uuid") {
+        Ok(d) => d,
+        Err(e) => {
+            unreachable!("/dev/disk/by-uuid must exist on Linux, got {e:?}")
+        }
+    };
+    for entry in uuid_dir.flatten() {
         if std::fs::canonicalize(entry.path()).ok().as_deref() == Some(canonical_target.as_path()) {
             found = Some(entry.file_name().to_string_lossy().to_string());
             break;
         }
     }
 
-    let expected = found.unwrap_or_else(|| {
-        panic!(
-            "{}: the code reported uuid={} but no /dev/disk/by-uuid entry points at this device — \
-             the UUID did not come from the reverse index",
-            path.display(),
-            id.uuid
-        )
-    });
+    let expected = match found {
+        Some(e) => e,
+        None => {
+            unreachable!("{}: the code reported uuid={} but no /dev/disk/by-uuid entry points at this device — \
+                 the UUID did not come from the reverse index",
+                path.display(),
+                id.uuid)
+        }
+    };
 
     assert_eq!(
         id.uuid,

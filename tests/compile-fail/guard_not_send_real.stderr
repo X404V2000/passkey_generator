@@ -1,0 +1,43 @@
+error[E0277]: `*const ()` cannot be sent between threads safely
+  --> tests/compile-fail/guard_not_send_real.rs:49:17
+   |
+49 |     assert_send(&guard);
+   |     ----------- ^^^^^^ `*const ()` cannot be sent between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `SessionGuard<StubReader>`, the trait `Send` is not implemented for `*const ()`
+note: required because it appears within the type `PhantomData<*const ()>`
+  --> $RUST/core/src/marker.rs
+note: required because it appears within the type `SessionGuard<StubReader>`
+  --> src/session.rs
+   |
+   | pub struct SessionGuard<R: DeviceReader> {
+   |            ^^^^^^^^^^^^
+note: required by a bound in `assert_send`
+  --> tests/compile-fail/guard_not_send_real.rs:38:19
+   |
+38 | fn assert_send<T: Send>(_: &T) {}
+   |                   ^^^^ required by this bound in `assert_send`
+
+error[E0277]: `*const ()` cannot be shared between threads safely
+  --> tests/compile-fail/guard_not_send_real.rs:52:17
+   |
+52 |     assert_sync(&guard);
+   |     ----------- ^^^^^^ `*const ()` cannot be shared between threads safely
+   |     |
+   |     required by a bound introduced by this call
+   |
+   = help: within `SessionGuard<StubReader>`, the trait `Sync` is not implemented for `*const ()`
+note: required because it appears within the type `PhantomData<*const ()>`
+  --> $RUST/core/src/marker.rs
+note: required because it appears within the type `SessionGuard<StubReader>`
+  --> src/session.rs
+   |
+   | pub struct SessionGuard<R: DeviceReader> {
+   |            ^^^^^^^^^^^^
+note: required by a bound in `assert_sync`
+  --> tests/compile-fail/guard_not_send_real.rs:39:19
+   |
+39 | fn assert_sync<T: Sync>(_: &T) {}
+   |                   ^^^^ required by this bound in `assert_sync`

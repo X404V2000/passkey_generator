@@ -38,6 +38,9 @@ fn compile_fail_guarantees() {
     t.compile_fail("tests/compile-fail/secret_not_clone.rs");
     t.compile_fail("tests/compile-fail/handle_not_send_mechanism.rs");
     t.compile_fail("tests/compile-fail/handle_not_send_real.rs");
+    // F3.5 tests 12 and 13a — same two-direction discipline as F3's pair above.
+    t.compile_fail("tests/compile-fail/guard_not_send_real.rs");
+    t.compile_fail("tests/compile-fail/must_use_capture_discard.rs");
 }
 
 /// The inverse case: this file must COMPILE cleanly.
@@ -49,4 +52,6 @@ fn compile_fail_guarantees() {
 fn must_use_boundary_is_as_documented() {
     let t = trybuild::TestCases::new();
     t.pass("tests/compile-fail/must_use_boundary_documented.rs");
+    // F3.5 test 13b — the inverse of 13a, for the same reason: the boundary is a tested fact.
+    t.pass("tests/compile-fail/must_use_capture_boundary.rs");
 }
