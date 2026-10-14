@@ -66,8 +66,15 @@ jobs:
       - name: Build (release, locked)
         run: cargo build --release --locked
 
-      - name: Test (release, locked, with test-hooks)
-        run: cargo test --release --locked --features test-hooks
+      # BOTH packages, explicitly. `cargo test` at the workspace root selects the ROOT package only, and
+      # `--workspace` did not select `tokengen-sys` under this `--features` invocation either (measured:
+      # 0 tokengen-sys test binaries). Nine tests were unreachable — the whole of device.rs's real-sysfs
+      # coverage — until DEFECT-006. `-p` is explicit and does not depend on resolution behaviour.
+      - name: Test tokengen (release, locked, with test-hooks)
+        run: cargo test --release --locked --features test-hooks -p tokengen
+
+      - name: Test tokengen-sys (release, locked)
+        run: cargo test --release --locked -p tokengen-sys
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets --features test-hooks -- -D warnings
