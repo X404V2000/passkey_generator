@@ -291,10 +291,43 @@ mod tests {
         }
     }
 
+    /// Calling twice must not fail **differently** the second time.
+    ///
+    /// The property is *stability*, not success. On a platform with no backend, `disable_core_dumps`
+    /// deliberately returns `Err(NotSupported)` — the non-Unix stub documents that as
+    /// fail-closed behaviour, and W1/W2 defer those platforms to F3.7. Asserting `is_ok()` universally was
+    /// the defect: it demanded a Unix-only outcome on Windows, and it **never ran in CI** until DEFECT-006
+    /// fixed the test selection, so it survived from F3 unnoticed.
+    ///
+    /// This is the same class as DEFECT-001 D5, and the same reasoning is written four lines above the
+    /// original assertion: *"A constrained environment may deny locking; that is a valid outcome (D3) and
+    /// must not be a test failure."*
     #[test]
     fn disable_core_dumps_is_idempotent() {
-        assert!(disable_core_dumps().is_ok());
-        assert!(disable_core_dumps().is_ok());
+        let first = disable_core_dumps();
+        let second = disable_core_dumps();
+
+        // Stability: whatever the platform reports, it must report the *same* thing twice. A second call
+        // that turned a failure into a success (or the reverse) would mean the operation is not
+        // idempotent, which is the property under test and holds on every platform.
+        assert_eq!(
+            first.is_ok(),
+            second.is_ok(),
+            "disable_core_dumps must be idempotent: the second call must not change the outcome. \
+             first={first:?}, second={second:?}"
+        );
+
+        // Where a backend exists, it must succeed. Where none exists, `NotSupported` is the documented
+        // outcome and is asserted *specifically* — not tolerated by a wildcard, so a future regression
+        // that returned, say, `PermissionDenied` on Windows would still be caught.
+        if cfg!(unix) {
+            assert!(first.is_ok(), "a Unix host has a backend; got {first:?}");
+        } else {
+            assert!(
+                matches!(first, Err(crate::CoreDumpError::NotSupported)),
+                "a platform with no backend must fail closed with NotSupported; got {first:?}"
+            );
+        }
     }
 
     #[test]

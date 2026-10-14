@@ -86,10 +86,30 @@ fn find_removable_partition() -> Option<PathBuf> {
 fn cwd_on_non_removable_root_is_rejected() {
     let result = tokengen_sys::device::resolve(Path::new("/"));
     match result {
+        // THE LINUX OUTCOME: a backend exists, it classified `/` as a fixed transport, and the policy
+        // rejected it. This is the path the test was written for.
         Err(tokengen_sys::device::DeviceReadError::NotRemovable) => {}
+
+        // THE OUTCOME ON A PLATFORM WITH NO BACKEND (macOS, Windows): `NotSupported`, fail-closed.
+        //
+        // The test originally treated this as a failure, which was wrong — it asserted a Linux
+        // postcondition as universal. macOS reaches `NotSupported` because device support is deferred to
+        // F3.7 (W1/W2), exactly as on Windows. The *rejection still happens*; only its name differs, and
+        // asserting the specific Linux variant here would be asserting the wrong thing.
+        //
+        // It is asserted specifically rather than tolerated by a wildcard, so a regression producing, say,
+        // `DeviceNotFound` for `/` would still be caught.
+        Err(tokengen_sys::device::DeviceReadError::NotSupported) => {
+            println!(
+                "this platform has no device backend (W1/W2, F3.7): `/` was refused with NotSupported \
+                 rather than NotRemovable. The rejection is the property; the variant is platform-specific."
+            );
+        }
+
         Err(other) => panic!(
-            "the root filesystem must be rejected as NotRemovable, got {other:?} — a different error \
-             means the classification, not the policy, is what changed"
+            "the root filesystem must be refused — as NotRemovable where a backend exists, or \
+             NotSupported where none does. Got {other:?}, which is neither, so something other than the \
+             policy changed."
         ),
         Ok(_) => panic!(
             "the root filesystem was ACCEPTED as a session device. On a host whose root is removable \
@@ -185,7 +205,13 @@ fn real_removable_device_is_accepted() {
 /// The independent side is computed here from `std::os::unix::fs::MetadataExt` and `libc`'s own
 /// `major`/`minor` conventions, **not** by calling back into the code under test. Comparing a function to
 /// itself would prove nothing.
-#[cfg(unix)]
+// LINUX ONLY, and the gate is the point rather than an inconvenience: this test's independent derivation
+// reads `/sys/dev/block`, which does not exist on macOS. Annotating it `#[cfg(unix)]` was wrong — the same
+// misapprehension as D2 (a Linux symbol under cfg(unix)) and D3 (a type that differs under cfg(unix)),
+// here reappearing as a *test* asserting a Linux filesystem layout as a Unix-wide one.
+//
+// The mechanism it checks (`st_dev` -> `/sys/dev/block`) is Linux's, so the test belongs to Linux.
+#[cfg(target_os = "linux")]
 #[test]
 fn resolve_matches_probe_chain() {
     use std::os::unix::fs::MetadataExt;
@@ -269,13 +295,22 @@ fn device_node_resolves_via_st_rdev() {
         path.display()
     );
 
-    let dev = tokengen_sys::device::resolve(&path).unwrap_or_else(|e| {
-        panic!(
+    match tokengen_sys::device::resolve(&path) {
+        Ok(dev) => assert!(
+            matches!(tokengen_sys::device::is_removable(&dev), Ok(true)),
+            "{}: a device found by the removable scan must classify as removable",
+            path.display()
+        ),
+        // A platform with no backend refuses rather than resolving. `st_rdev` is portable and the
+        // assertion above still holds there, but this test's resolve half belongs to Linux (and F3.7).
+        Err(tokengen_sys::device::DeviceReadError::NotSupported) => println!(
+            "this platform has no device backend (W1/W2, F3.7): st_rdev was checked, resolve was not"
+        ),
+        Err(e) => panic!(
             "{}: a device node must resolve (DEFECT-003: this failed when only st_dev was read); got {e:?}",
             path.display()
-        )
-    });
-    assert!(matches!(tokengen_sys::device::is_removable(&dev), Ok(true)));
+        ),
+    }
 }
 
 // =============================================================================================
