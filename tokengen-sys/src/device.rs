@@ -222,29 +222,75 @@ mod platform {
     /// The serial and `removable` attributes live on the whole disk, not the partition, so this step is
     /// required before reading either — the mistake the blueprint called out (P3: "the real path is one
     /// level down, on the device's parent node").
-    fn whole_disk(name: &str) -> String {
-        // `nvme0n1p2` -> strip `p2`; `sda1` -> strip `1`; `sda` -> unchanged.
-        if let Some(idx) = name.rfind('p') {
-            if name[idx + 1..].chars().all(|c| c.is_ascii_digit()) && idx + 1 < name.len() {
-                // Only treat `p` as a partition separator if what precedes it ends in a digit
-                // (`nvme0n1p2`), otherwise `sda` would be mangled by a stray `p`.
-                if name[..idx]
-                    .chars()
-                    .last()
-                    .is_some_and(|c| c.is_ascii_digit())
-                {
-                    return name[..idx].to_string();
-                }
+    /// The **whole-disk** name for a block device name, asked of the kernel rather than parsed.
+    ///
+    /// # Why this is not string manipulation (AM-006.1, DEFECT-009)
+    ///
+    /// The previous implementation used three string heuristics, ending in
+    /// `trim_end_matches(is_ascii_digit)`. **A trailing digit is not evidence of a partition suffix:**
+    /// `nvme0n1` and `mmcblk0` end in digits by *naming convention* — the digit is part of the disk's own
+    /// name. Measured before the fix:
+    ///
+    /// | input | old output | correct? |
+    /// |---|---|---|
+    /// | `nvme0n1p2` | `nvme0n1` | yes |
+    /// | `sda1` | `sda` | yes |
+    /// | **`nvme0n1`** | **`nvme0n`** | **no** |
+    /// | **`mmcblk0`** | **`mmcblk`** | **no** |
+    ///
+    /// `nvme0n` does not exist, so every subsequent lookup failed and `resolve` reported
+    /// `PropertyUnreadable` for a device that was merely a whole disk.
+    ///
+    /// # The rule
+    ///
+    /// `/sys/block/<...>/partition` exists **only** for a partition. So: canonicalise the device's sysfs
+    /// directory (via `/sys/dev/block/<maj>:<min>`, which works for a disk **and** a partition) and **walk
+    /// up while it contains a `partition` file**; the first directory without one is the disk, and its
+    /// basename is the answer.
+    ///
+    /// **Note where the file lives**, because an earlier draft of AM-006.1 got this wrong and a probe
+    /// caught it: `/sys/block` contains **only whole disks**, and a partition's directory is a **child of
+    /// its disk's** (`/sys/block/sda/sda1`, not `/sys/block/sda1`). The rule as first written would have
+    /// returned "whole disk" for every partition.
+    ///
+    /// Verified against real sysfs for `sda1`, `sdb1`, `nvme0n1p1`, `nvme0n1p2`, `sda` and `nvme0n1` —
+    /// six of six, including the two the old rule got wrong.
+    ///
+    /// `name` is assumed to be a block-device name already produced by resolution (e.g. `sda1`), so the
+    /// directory always exists; if it does not, the name is returned unchanged and the caller's later
+    /// lookups fail closed, which is the correct behaviour for a name we cannot interpret.
+    fn whole_disk(dev: (u64, u64), fallback: &str) -> String {
+        // The entry point is `/sys/dev/block/<maj>:<min>`, NOT `/sys/block/<name>`.
+        //
+        // This is the second correction in this one function, and the probe caught both. `/sys/block`
+        // contains **only whole disks**; a partition has no `/sys/block/<partition>` entry at all, its
+        // directory being a child of the disk's. So canonicalising `/sys/block/sda1` fails, and the first
+        // draft of this fix therefore returned the partition name unchanged — breaking `/dev/sda1` and
+        // `/dev/sdb1`, which had worked before it. `/sys/dev/block/<maj>:<min>` resolves correctly for
+        // **both** a disk and a partition, which is why the caller already uses it to find the name.
+        let (maj, min) = dev;
+        let link = PathBuf::from(format!("/sys/dev/block/{maj}:{min}"));
+        let Ok(mut cur) = fs::canonicalize(&link) else {
+            // Cannot canonicalise. Return the caller's name rather than a guess: a wrong guess here is
+            // exactly what produced DEFECT-009, and the caller's later lookups will fail closed.
+            return fallback.to_string();
+        };
+
+        // Walk up while the directory says it is a partition. `/sys/block/<...>/partition` exists only
+        // for partitions, so the first ancestor without it is the disk.
+        while cur.join("partition").exists() {
+            match cur.parent() {
+                Some(parent) => cur = parent.to_path_buf(),
+                // Reached the filesystem root without finding a disk directory. Fail closed by returning
+                // the fallback; the caller's lookups then fail rather than binding to a guess.
+                None => return fallback.to_string(),
             }
         }
-        let trimmed: String = name
-            .trim_end_matches(|c: char| c.is_ascii_digit())
-            .to_string();
-        if trimmed.is_empty() {
-            name.to_string()
-        } else {
-            trimmed
-        }
+
+        cur.file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| fallback.to_string())
     }
 
     /// Read `/sys/block/<disk>/removable`. `1` means the kernel considers it removable.
@@ -329,7 +375,9 @@ mod platform {
             // Unknown transport: fall back to the flag, and if that is unreadable, fail closed rather
             // than guess. An unfounded `Ok(false)` would refuse silently; an unfounded `Ok(true)` would
             // accept a device we cannot characterise. Reporting the error is the honest third option.
-            Transport::Unknown => removable_flag(disk).ok_or(DeviceReadError::PropertyUnreadable),
+            Transport::Unknown => {
+                removable_flag(disk).ok_or(DeviceReadError::RemovabilityUnreadable)
+            }
         }
     }
 
@@ -347,12 +395,12 @@ mod platform {
             }
             // Readable but empty is NOT the same as absent: report unreadable rather than falling through
             // to a different mechanism that might yield a value for a different reason. (§10.1, test 6.)
-            return Err(DeviceReadError::PropertyUnreadable);
+            return Err(DeviceReadError::SerialUnreadable);
         }
 
         // 2. Binary VPD page 0x80 (USB mass storage). Probe P8.
         let vpd = format!("/sys/block/{disk}/device/vpd_pg80");
-        let bytes = fs::read(&vpd).map_err(|_| DeviceReadError::PropertyUnreadable)?;
+        let bytes = fs::read(&vpd).map_err(|_| DeviceReadError::SerialUnreadable)?;
         decode_vpd_pg80(&bytes)
     }
 
@@ -372,25 +420,25 @@ mod platform {
     /// check, which is worse than having no serial at all.
     fn decode_vpd_pg80(bytes: &[u8]) -> Result<String, DeviceReadError> {
         if bytes.len() < 4 {
-            return Err(DeviceReadError::PropertyUnreadable);
+            return Err(DeviceReadError::SerialUnreadable);
         }
         if bytes[1] != 0x80 {
             // Not a Unit Serial Number page; do not guess at another page's contents.
-            return Err(DeviceReadError::PropertyUnreadable);
+            return Err(DeviceReadError::SerialUnreadable);
         }
         let len = ((bytes[2] as usize) << 8) | (bytes[3] as usize);
         let end = 4usize
             .checked_add(len)
-            .ok_or(DeviceReadError::PropertyUnreadable)?;
+            .ok_or(DeviceReadError::SerialUnreadable)?;
         if end > bytes.len() {
             // Declared length exceeds what was actually read: truncated, so refuse.
-            return Err(DeviceReadError::PropertyUnreadable);
+            return Err(DeviceReadError::SerialUnreadable);
         }
         let s =
-            std::str::from_utf8(&bytes[4..end]).map_err(|_| DeviceReadError::PropertyUnreadable)?;
+            std::str::from_utf8(&bytes[4..end]).map_err(|_| DeviceReadError::SerialUnreadable)?;
         let t = s.trim().trim_matches('\0').trim();
         if t.is_empty() {
-            return Err(DeviceReadError::PropertyUnreadable);
+            return Err(DeviceReadError::SerialUnreadable);
         }
         Ok(t.to_string())
     }
@@ -403,7 +451,7 @@ mod platform {
     fn uuid_for_device(disk_path: &Path) -> Result<String, DeviceReadError> {
         let target = fs::canonicalize(disk_path).map_err(|_| DeviceReadError::DeviceNotFound)?;
         let dir = Path::new("/dev/disk/by-uuid");
-        let entries = fs::read_dir(dir).map_err(|_| DeviceReadError::PropertyUnreadable)?;
+        let entries = fs::read_dir(dir).map_err(|_| DeviceReadError::UuidUnreadable)?;
 
         for entry in entries.flatten() {
             let link = entry.path();
@@ -421,7 +469,7 @@ mod platform {
     pub(super) fn resolve(path: &Path) -> Result<DeviceDescriptor, DeviceReadError> {
         let dev = device_of(path)?;
         let part = resolve_block_name(dev)?;
-        let disk = whole_disk(&part);
+        let disk = whole_disk(dev, &part);
 
         if !is_removable_disk(&disk)? {
             // A non-removable backing device is a refusal, not an error to be tolerated: the guard's
@@ -451,9 +499,14 @@ mod platform {
     /// *which* identity component was unverifiable without inventing a value for it.
     pub(super) fn component_of(err: &DeviceReadError) -> Option<IdentityComponent> {
         match err {
-            DeviceReadError::PropertyUnreadable | DeviceReadError::UuidNotFound => {
+            DeviceReadError::UuidUnreadable | DeviceReadError::UuidNotFound => {
                 Some(IdentityComponent::FilesystemUuid)
             }
+            DeviceReadError::SerialUnreadable => Some(IdentityComponent::HardwareSerial),
+            // Removability concerns neither identity component, so `None` is the correct answer rather
+            // than a default: the caller reports the device as unclassifiable, not as unverifiable in a
+            // component that did not fail.
+            DeviceReadError::RemovabilityUnreadable | DeviceReadError::NotRemovable => None,
             _ => None,
         }
     }
@@ -525,7 +578,23 @@ pub enum DeviceReadError {
     /// `st_dev` did not resolve to a block device under `/sys/dev/block`.
     DeviceNotFound,
     /// A sysfs property could not be read, or was malformed/truncated.
-    PropertyUnreadable,
+    /// The **filesystem UUID** could not be read.
+    ///
+    /// Split out of a former single `PropertyUnreadable` (AM-006.2, DEFECT-010): that variant was returned
+    /// by both the UUID lookup and the serial read, and `component_of` mapped it unconditionally to
+    /// `FilesystemUuid` — so a caller whose **serial** was unreadable was told the **filesystem UUID** was.
+    UuidUnreadable,
+    /// The **hardware serial** could not be read.
+    ///
+    /// The other half of the split. A drive exposing neither `device/serial` nor `device/vpd_pg80` produces
+    /// this, and the caller is now told so.
+    SerialUnreadable,
+    /// The device's **removability** could not be determined.
+    ///
+    /// Distinct from the two above because it concerns neither identity component: `component_of` correctly
+    /// returns `None` for it, and a caller reports the device as unclassifiable rather than as unverifiable
+    /// in a named component.
+    RemovabilityUnreadable,
     /// No `/dev/disk/by-uuid` link resolves to this device.
     UuidNotFound,
     /// The backing device is not removable. A refusal, not a failure to determine.

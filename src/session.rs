@@ -252,12 +252,23 @@ fn map_error(err: tokengen_sys::device::DeviceReadError) -> SessionError {
         E::NotRemovable => SessionError::NotOnRemovableDevice,
         E::StatFailed | E::InvalidPath => SessionError::DeviceNotFound,
         E::DeviceNotFound => SessionError::DeviceNotFound,
-        E::UuidNotFound => SessionError::IdentityUnreadable {
+        // Each variant now names its own component, so this mapping cannot misattribute one (AM-006.2).
+        //
+        // It previously could, and did: a single `PropertyUnreadable` was mapped here to `HardwareSerial`
+        // while `component_of` mapped the *same error* to `FilesystemUuid`. Two places, one error, two
+        // different answers — and the caller saw whichever it happened to consult. Splitting the variant
+        // removes the possibility rather than the instance.
+        E::UuidUnreadable | E::UuidNotFound => SessionError::IdentityUnreadable {
             component: C::FilesystemUuid,
         },
-        E::PropertyUnreadable => SessionError::IdentityUnreadable {
+        E::SerialUnreadable => SessionError::IdentityUnreadable {
             component: C::HardwareSerial,
         },
+        // Removability is not an identity component. The caller cannot say *which* identity failed
+        // because none did; reporting it as `IdentityUnreadable` would name a component that was read
+        // successfully. `DeviceNotFound` is the honest mapping here — the device could not be
+        // characterised — and it fails closed.
+        E::RemovabilityUnreadable => SessionError::DeviceNotFound,
         E::NotSupported => SessionError::NotSupported,
         // `DeviceReadError` is `#[non_exhaustive]`, so a future variant must not break this crate.
         // The catch-all is **an error, never a success**: an unrecognised platform failure must fail

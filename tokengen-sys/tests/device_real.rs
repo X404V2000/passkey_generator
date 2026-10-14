@@ -416,3 +416,202 @@ fn uuid_lookup_uses_reverse_index() {
         id.uuid
     );
 }
+
+// =============================================================================================
+// AM-006.3 — the two cases that let DEFECT-009 and DEFECT-010 through
+// =============================================================================================
+
+/// **A whole-disk device node resolves** — the case no test covered before AM-006.3.
+///
+/// DEFECT-009 survived because **every** real-sysfs test reached the platform through a *partition*
+/// (`/dev/sda1`, `/dev/sdb1`, `/dev/nvme0n1p2`). `whole_disk` was only ever asked to reduce a partition
+/// name, where the old digit-trimming happened to be correct. A **whole disk whose name ends in a digit**
+/// (`nvme0n1`, `mmcblk0`) was never passed in, so the defect was invisible:
+///
+/// ```text
+/// whole_disk("nvme0n1") -> "nvme0n"   (a directory that does not exist)
+/// ```
+///
+/// `resolve` then reported `PropertyUnreadable` for a device that was merely a whole disk — a wrong
+/// diagnosis, which is the class this project records.
+///
+/// This test asserts the **disk/partition pair** for the same device, so a regression that fixes one and
+/// breaks the other is caught. `sda`/`sda1` is the pair whose *partition* worked before, and
+/// `nvme0n1`/`nvme0n1p2` is the pair whose *disk* did not — both are needed to cover the reduction rule.
+#[cfg(target_os = "linux")]
+#[test]
+fn whole_disk_and_partition_both_resolve() {
+    // Enumerate real block devices and check the pairing for each, rather than naming devices that may
+    // not exist on a given host. The assertion is *consistency*: if a partition resolves, its disk must
+    // too, because the disk is what gives the partition its identity.
+    let mut checked = 0usize;
+    let mut pairs = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir("/sys/block") {
+        for entry in entries.flatten() {
+            let disk = entry.file_name().to_string_lossy().to_string();
+            if disk.starts_with("loop") || disk.starts_with("ram") || disk.starts_with("dm-") {
+                continue;
+            }
+            // Find a partition of this disk, if it has one.
+            let mut partition = None;
+            if let Ok(children) = std::fs::read_dir(entry.path()) {
+                for child in children.flatten() {
+                    let name = child.file_name().to_string_lossy().to_string();
+                    if child.path().join("partition").exists() {
+                        partition = Some(name);
+                        break;
+                    }
+                }
+            }
+            pairs.push((disk, partition));
+        }
+    }
+
+    for (disk, partition) in pairs {
+        let disk_path = PathBuf::from(format!("/dev/{disk}"));
+        if !disk_path.exists() {
+            continue;
+        }
+
+        // THE DISK: the case DEFECT-009 broke. It must resolve *consistently* — either accepted as
+        // removable, or refused as NotRemovable. `PropertyUnreadable` / `RemovabilityUnreadable` here
+        // would mean the disk name could not be reduced, which is the defect.
+        match tokengen_sys::device::resolve(&disk_path) {
+            Ok(dev) => {
+                let removable = tokengen_sys::device::is_removable(&dev);
+                println!("whole disk {disk}: Ok, removable={removable:?}");
+                assert!(
+                    removable.is_ok(),
+                    "{disk}: a whole disk that resolved must classify as removable or not; got {removable:?}"
+                );
+                checked += 1;
+            }
+            Err(tokengen_sys::device::DeviceReadError::NotRemovable) => {
+                println!("whole disk {disk}: refused as NotRemovable (correct for an internal disk)");
+                checked += 1;
+            }
+            // REACHABLE and diagnosable: this is the DEFECT-009 signature, so it needs a real
+            // assertion rather than `unreachable!`.
+            Err(other) => assert!(
+                matches!(other, tokengen_sys::device::DeviceReadError::NotRemovable),
+                "{disk}: a whole-disk device node must either resolve or be refused as NotRemovable. \
+                 Got {other:?} — this is the DEFECT-009 signature: the disk name was reduced to one that \
+                 does not exist."
+            ),
+        }
+
+        // THE PARTITION: must not regress. If the disk is removable, its partition must resolve too.
+        if let Some(part) = partition {
+            let part_path = PathBuf::from(format!("/dev/{part}"));
+            if !part_path.exists() {
+                continue;
+            }
+            match tokengen_sys::device::resolve(&part_path) {
+                Ok(dev) => {
+                    println!("  partition {part}: Ok, removable={:?}", tokengen_sys::device::is_removable(&dev));
+                }
+                Err(tokengen_sys::device::DeviceReadError::NotRemovable) => {
+                    println!("  partition {part}: refused as NotRemovable (consistent with its disk)");
+                }
+                Err(other) => assert!(
+                    matches!(other, tokengen_sys::device::DeviceReadError::NotRemovable),
+                    "{part}: a partition of a checked disk must resolve or be refused as NotRemovable; \
+                     got {other:?}. An earlier draft of the AM-006.1 fix broke exactly this case by \
+                     canonicalising /sys/block/<partition>, which does not exist."
+                ),
+            }
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "at least one whole-disk device node must have been checked; found none, so this test proved nothing"
+    );
+}
+
+/// **An identity failure names the component that actually failed** — the case DEFECT-010 hid behind.
+///
+/// Every prior test asserted *that* an error occurred, never *which* component it named — even though
+/// `Unverifiable { component }` exists **solely** to carry that. So a `PropertyUnreadable` shared between
+/// the UUID lookup and the serial read was mapped to `FilesystemUuid` unconditionally, and a caller whose
+/// **serial** was unreadable was told the **filesystem UUID** was.
+///
+/// This test asserts the mapping **in both directions**, and it fails if the two lookups are ever made
+/// indistinguishable again.
+#[cfg(target_os = "linux")]
+#[test]
+fn identity_failure_names_the_component_that_failed() {
+    use tokengen_sys::device::{component_of, DeviceReadError, IdentityComponent};
+
+    // The UUID and the serial are distinct variants, and each maps to its own component. Asserted directly
+    // on the mapping, so the property is checked even on a host where neither failure can be provoked.
+    assert_eq!(
+        component_of(&DeviceReadError::UuidUnreadable),
+        Some(IdentityComponent::FilesystemUuid),
+        "a UUID failure must name the filesystem UUID"
+    );
+    assert_eq!(
+        component_of(&DeviceReadError::SerialUnreadable),
+        Some(IdentityComponent::HardwareSerial),
+        "a serial failure must name the hardware serial — DEFECT-010 reported the UUID here"
+    );
+    assert_eq!(
+        component_of(&DeviceReadError::UuidNotFound),
+        Some(IdentityComponent::FilesystemUuid)
+    );
+    // Removability is not an identity component: naming one would claim a component failed that did not.
+    assert_eq!(
+        component_of(&DeviceReadError::RemovabilityUnreadable),
+        None,
+        "removability is not an identity component; reporting one would name a component that was read"
+    );
+
+    // And on real hardware, where the failure can be provoked: a drive that has a UUID but no serial must
+    // report `HardwareSerial`. This is the observation that exposed DEFECT-010.
+    let mut observed_a_serial_failure = false;
+    if let Ok(entries) = std::fs::read_dir("/dev") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("sd") && !name.starts_with("nvme") {
+                continue;
+            }
+            let path = PathBuf::from(format!("/dev/{name}"));
+            let Ok(dev) = tokengen_sys::device::resolve(&path) else {
+                continue;
+            };
+            if let Err(e) = tokengen_sys::device::identify(&dev) {
+                let component = component_of(&e);
+                println!("{name}: identity error {e:?} -> component {component:?}");
+                assert!(
+                    component.is_some(),
+                    "{name}: an identity failure must name a component, so the caller can report \
+                     `Unverifiable` rather than inventing a value"
+                );
+                if component == Some(IdentityComponent::HardwareSerial) {
+                    observed_a_serial_failure = true;
+                    // The UUID must genuinely have been readable, or this asserts nothing: a host where
+                    // both failed would report the serial for the wrong reason.
+                    let canonical = std::fs::canonicalize(&path).ok();
+                    let has_uuid = std::fs::read_dir("/dev/disk/by-uuid")
+                        .map(|dir| {
+                            dir.flatten()
+                                .any(|e| std::fs::canonicalize(e.path()).ok() == canonical)
+                        })
+                        .unwrap_or(false);
+                    assert!(
+                        has_uuid,
+                        "{name}: reported a serial failure, but the independent check says this device \
+                         has NO by-uuid entry either — so the serial is not demonstrably the component \
+                         that failed, and this test would be asserting the wrong thing"
+                    );
+                    println!("  confirmed: {name} has a UUID but no serial, and the error says so");
+                }
+            }
+        }
+    }
+    println!(
+        "hardware serial failure observed: {observed_a_serial_failure} \
+         (false is acceptable here; the mapping assertions above are the contract)"
+    );
+}
