@@ -73,6 +73,24 @@
 // Scoped to this file, to these two lints, with this reason — the same form as the `unnecessary_cast` allow
 // on `dev_t_to_u64`. No production module acquires it.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
+// GATE THE WHOLE FILE: under `dev-mode` the guard is compiled OFF, so `capture` succeeds and returns
+// `Disabled` — there is no `Present` to time and no state machine to measure. Timings taken there would
+// describe nothing.
+//
+// An INNER attribute (`#![cfg]`) is the right mechanism: a plain `#[cfg]` applies only to the item that
+// follows it, which would leave the imports and helper functions compiled and produce a cascade of
+// "cannot find type" errors — as an earlier attempt did.
+//
+// WHY THIS IS NOT A SILENT SKIP, which is the important part. An earlier draft tried to detect the
+// situation inside a test by matching on `capture`'s ERROR — which never fires, because `dev-mode` capture
+// SUCCEEDS. The tests then failed on the `Present` assertion, on CI, on all three platforms. That is
+// DEFECT-004's mistake repeated: a suite that is not configuration-aware.
+//
+// Unlike `session_guard.rs` there is no `dev-mode` contract to assert here — that file already covers
+// "Disabled is distinguishable" (test 11), so a duplicate would add no coverage. The file is simply absent
+// in that configuration, and the absence is visible: the dev-mode CI step's output shows which binaries
+// ran, so a missing `session_latency` is observable rather than assumed.
+#![cfg(not(feature = "dev-mode"))]
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
