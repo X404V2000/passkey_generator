@@ -1,0 +1,28 @@
+error: unused `Result` that must be used
+  --> tests/compile-fail/must_use_capture_discard.rs:55:5
+   |
+55 |     SessionGuard::capture(StubReader, Path::new("/"));
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this `Result` may be an `Err` variant, which should be handled
+note: the lint level is defined here
+  --> tests/compile-fail/must_use_capture_discard.rs:33:9
+   |
+33 | #![deny(unused_must_use)]
+   |         ^^^^^^^^^^^^^^^
+help: use `let _ = ...` to ignore the resulting value
+   |
+55 |     let _ = SessionGuard::capture(StubReader, Path::new("/"));
+   |     +++++++
+
+error: unused return value of `SessionGuard::<R>::capture` that must be used
+  --> tests/compile-fail/must_use_capture_discard.rs:55:5
+   |
+55 |     SessionGuard::capture(StubReader, Path::new("/"));
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: the guard status must be surfaced; capture does not imply Present — check the status before treating the session as guarded
+help: use `let _ = ...` to ignore the resulting value
+   |
+55 |     let _ = SessionGuard::capture(StubReader, Path::new("/"));
+   |     +++++++
