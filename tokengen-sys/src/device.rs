@@ -77,20 +77,47 @@ mod platform {
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
 
-    /// `major(dev)` / `minor(dev)` as the kernel encodes them in `st_dev`.
+    /// glibc's `major()`: the high bits above the 8-bit minor field.
     ///
-    /// Linux's `dev_t` is `(major << 20) | minor` for the *internal* encoding, but the value surfaced to
-    /// userspace in `st_dev` by glibc follows the legacy `(major << 8) | minor` layout for the low range.
-    /// Probe P5 confirmed the working decode against `/sys/dev/block/<maj>:<min>`:
-    /// `66306` → `259:2`. The division is done in `u64` to avoid truncation on large device numbers.
-    fn split_dev(dev: u64) -> (u64, u64) {
-        // glibc's convention, which P5 validated on this host. Using 256 rather than 2^20 is deliberate and
-        // matches what `stat` reports for `st_dev`; the 2^20 form applies to the kernel's internal type.
-        (dev / 256, dev % 256)
+    /// Written out rather than borrowed from a crate — it is three operations, and the project's
+    /// dependency budget is deliberate (minimal attack surface; see G7).
+    fn major(dev: u64) -> u64 {
+        ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfffu64)
     }
 
-    /// `stat` the path and return its `st_dev`.
-    fn st_dev_of(path: &Path) -> Result<u64, DeviceReadError> {
+    /// glibc's `minor()`.
+    fn minor(dev: u64) -> u64 {
+        (dev & 0xff) | ((dev >> 12) & !0xffu64)
+    }
+
+    /// True if `/sys/dev/block/<maj>:<min>` names an existing block device.
+    fn sysfs_block_exists((maj, min): (u64, u64)) -> bool {
+        PathBuf::from(format!("/sys/dev/block/{maj}:{min}")).exists()
+    }
+
+    /// `stat` the path and return the **device it lives on**, as `(major, minor)`.
+    ///
+    /// # Two fields, and reading the wrong one silently fails
+    ///
+    /// A path names a device in one of two ways, and the device is **not** in the same field:
+    ///
+    /// | the path is a… | the device is in |
+    /// |---|---|
+    /// | mounted filesystem path (`/`, `/media/x/DRIVE`) | `st_dev` |
+    /// | **device node** (`/dev/sda1`) | **`st_rdev`** |
+    ///
+    /// Measured on this host (`probes/stdev_vs_rdev.py`):
+    ///
+    /// ```text
+    /// /          st_dev -> 259:2  resolves        st_rdev -> 0:0    does not
+    /// /dev/sda1  st_dev -> 0:6    DOES NOT        st_rdev -> 8:1    resolves
+    /// ```
+    ///
+    /// Reading `st_dev` alone yields, for a device node, the major:minor of the filesystem the node lives
+    /// on (`0:6`) — which resolves to nothing. **So neither field is right for both cases: prefer whichever
+    /// one actually resolves.** Choosing by field alone is what made an earlier revision of this function
+    /// fail for device nodes, and the failure was silent until it was measured.
+    fn device_of(path: &Path) -> Result<(u64, u64), DeviceReadError> {
         let c =
             CString::new(path.as_os_str().as_bytes()).map_err(|_| DeviceReadError::InvalidPath)?;
 
@@ -103,18 +130,31 @@ mod platform {
         if rc != 0 {
             return Err(DeviceReadError::StatFailed);
         }
-        // `st_dev` is used as an opaque device number. On Linux/glibc it is already
-        // `u64`; `u64::from` here would also fail to compile if it were not, which is
-        // the behaviour we want — a silent lossy cast would be worse.
-        Ok(st.st_dev)
+
+        // `st_dev` first: for a mounted filesystem path this is the backing device, and that is the
+        // common case — `cwd` is a directory on a mount.
+        let from_st_dev = (major(st.st_dev), minor(st.st_dev));
+        if sysfs_block_exists(from_st_dev) {
+            return Ok(from_st_dev);
+        }
+
+        // Otherwise the path is a device node: its own device is `st_rdev`.
+        let from_st_rdev = (major(st.st_rdev), minor(st.st_rdev));
+        if sysfs_block_exists(from_st_rdev) {
+            return Ok(from_st_rdev);
+        }
+
+        // Neither resolved. Failing closed is correct: we cannot say which device this path is on, and
+        // guessing would bind identity to the wrong thing.
+        Err(DeviceReadError::DeviceNotFound)
     }
 
-    /// Resolve a `st_dev` to its kernel block-device name, e.g. `sda1`.
+    /// Resolve a `(major, minor)` pair to its kernel block-device name, e.g. `sda1`.
     ///
     /// Reads `/sys/dev/block/<maj>:<min>`, a symlink into the device tree. The final component of the
     /// resolved path is the device name (P5).
-    fn resolve_block_name(dev: u64) -> Result<String, DeviceReadError> {
-        let (maj, min) = split_dev(dev);
+    fn resolve_block_name(dev: (u64, u64)) -> Result<String, DeviceReadError> {
+        let (maj, min) = dev;
         let link = PathBuf::from(format!("/sys/dev/block/{maj}:{min}"));
         let resolved = fs::canonicalize(&link).map_err(|_| DeviceReadError::DeviceNotFound)?;
         resolved
@@ -326,7 +366,7 @@ mod platform {
     }
 
     pub(super) fn resolve(path: &Path) -> Result<DeviceDescriptor, DeviceReadError> {
-        let dev = st_dev_of(path)?;
+        let dev = device_of(path)?;
         let part = resolve_block_name(dev)?;
         let disk = whole_disk(&part);
 
