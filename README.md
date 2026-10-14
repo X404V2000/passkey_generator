@@ -71,6 +71,37 @@ Stated because a limitation the user is not told about is a limitation they will
 - **This is not a key store.** `Secret<T>` protects a buffer for the duration of an operation. It does
   not persist, rotate, or manage keys.
 
+### The USB session guard (F3.5)
+
+- **The session guard is Linux-only in the current revision.** It binds a session to the device backing a
+  working directory, using `/sys/dev/block`, `/sys/block/<dev>/device/*`, and `/dev/disk/by-uuid` — Linux
+  facilities. On macOS and Windows the backend is **not provided**, and the guard reports `NotSupported`
+  rather than silently reporting a session as present. **This is deliberate and enforced at compile time**:
+  the backend is gated `#[cfg(target_os = "linux")]`, so those platforms cannot acquire a backend that
+  cannot work.
+- **It detects; it does not exit.** `check()` reports whether the bound device is still the same one. Acting
+  on that — dropping secrets, closing the UI — is the caller's job. The guard cannot meet the one-second
+  bound on its own: it owns 250 ms of it.
+- **The guard does not assert how quickly a caller reacts.** Its latency test measures *detection* only.
+  A session meets the end-to-end bound only if the caller also polls at least every 250 ms and acts
+  promptly — including while blocked on input.
+- **`Unverifiable` is treated as a failure, not a warning.** If a device's serial or filesystem UUID cannot
+  be read, the guard refuses rather than binding to a weaker signal. On a drive that exposes no serial in
+  sysfs at all, the guard will **not run at all** until that path is implemented. Failing closed is
+  intended, and this narrows which drives work.
+- **A device soldered internally but attached over USB is treated as removable.** It is indistinguishable
+  from an external drive by any signal the operating system exposes. Refusing every USB device to defend
+  against that configuration would reject every external drive.
+- **Removability is decided by how a device is attached, not by the kernel's `removable` flag.** The flag
+  cannot distinguish a USB enclosure that presents a fixed disk (which reports `0`) from an internal drive
+  (which also reports `0`). A tool that trusted the flag alone would refuse a legitimate external hard
+  drive.
+- **The guard verifies the device, not the filesystem.** It confirms the same device is still present and
+  has the same identity. It does not check that the filesystem on it is intact, uncorrupted, or unmodified.
+- **An attacker who images the medium wins.** The guard binds to a device's identity — its serial and
+  filesystem UUID. It cannot detect data copied onto identical media, because identity is a property of the
+  device, not of its contents.
+
 ---
 
 ## Installation & Environment
