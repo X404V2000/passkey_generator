@@ -15,7 +15,7 @@ users rely on them. Every rule below exists because a real defect reached the re
 | | |
 |---|---|
 | Product | TokenGen — portable, offline, fail-closed token/passkey generator, runs from a USB drive |
-| Language | **Rust.** The Python tree under `src/passkey_gen/` is **legacy and unsupported** — never add to it, never present it as a security-equivalent implementation |
+| Language | **Rust.** The Python tree lives under `legacy/python/` and is **legacy, unsupported, and not installed by any packaging path** (F3.9) — never add to it, never present it as a security-equivalent implementation, and never restore a `pip`/console entry point for it |
 | Crates | `tokengen` (main, `#![forbid(unsafe_code)]`) + `tokengen-sys` (the **only** crate permitted `unsafe`, behind a safe public API) |
 | Security posture | Assume hostile host. Fail closed: on any CSPRNG, identity, or verification error, refuse — never retry, never fall back to a weaker path, never return partial data |
 | Honesty | The README contains **"What This Tool Cannot Do"**. It is a feature. Never soften it under pressure |

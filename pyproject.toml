@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "High-entropy, stateless passkey and secret key generator with active memory zeroization."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [
     { name = "Security Engineering Team" }
 ]
@@ -22,12 +22,19 @@ classifiers = [
     "Topic :: Security :: Cryptography"
 ]
 
-[project.scripts]
-passkey-gen = "passkey_gen.cli:main"
+# NOTE: there is deliberately NO `[project.scripts]` entry.
+#
+# There used to be one: `passkey-gen = "passkey_gen.cli:main"`, which bound the
+# console command to the LEGACY PYTHON implementation. That is risk R7 — a user
+# running `pip install .` received a tool that violates this project's first
+# invariant, G3 (fail-closed), because `legacy/python/passkey_gen/memory.py`
+# degrades silently when `mlock` is unavailable instead of refusing.
+#
+# It is removed rather than repointed, because the Rust CLI does not exist yet
+# (that is F4). Installing NO command is honest; installing the wrong one is not.
+# See F3.9 and decision D-P12.
 
+# The legacy package is no longer under `src/`, so the finder no longer collects it.
+# It is NOT added back: `legacy/python/` is outside the trust path (F3.9, D-P12).
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]

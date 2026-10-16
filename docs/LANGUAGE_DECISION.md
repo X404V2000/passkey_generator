@@ -143,7 +143,7 @@ Ordered by risk. Not all steps need to land at once.
 | 1 | Add `SECURITY.md` stating the Rust guarantees; disclose the Python limitation | Immediate |
 | 2 | Correct `README.md` §4.4 and remove Python install instructions as the primary path | Immediate |
 | 3 | Remove the `passkey-gen` console script from `pyproject.toml`, or remove the file | High |
-| 4 | Move `src/passkey_gen/` and `tests/` out of the trust path (delete or relocate to `legacy/` with a warning banner) | High |
+| 4 | ~~Move `src/passkey_gen/` and `tests/` out of the trust path~~ — **DONE** by **F3.9** at the Founder's decision **D-P12**: relocated to `legacy/python/` with a warning README, and the console-script entry point removed so no packaging path installs it. Verified by `tests/f39_trust_path.rs`. | High |
 | 5 | Port any capability unique to `webauthn.py` (COSE/JWK/PEM export) into Rust when a feature owns it | Tracked |
 | 6 | Reconcile the handoff document's claims with the actual repository state | High |
 

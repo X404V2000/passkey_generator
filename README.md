@@ -2,11 +2,13 @@
 
 > ## ⚠️ Project status — read before installing
 >
-> TokenGen is migrating from a **legacy Python implementation** to a **Rust implementation**.
+> TokenGen's supported implementation is **Rust**. The legacy Python has been **removed from the trust
+> path** (F3.9): it is no longer installed by any packaging path, and it lives under `legacy/python/` with a
+> README explaining why it cannot satisfy this project's invariants.
 >
-> | | Rust (`src/`) | Python (`src/passkey_gen/`) |
+> | | Rust (`src/`, `tokengen-sys/`) | Python (`legacy/python/`) |
 > |---|---|---|
-> | Status | **Supported.** F1 (entropy) and F2 (key generation) are frozen. | **Legacy — do not use for real secrets.** |
+> | Status | **Supported.** F1, F2, F3 and F3.5 are frozen. | **Legacy — do not use for real secrets.** Not installed by any packaging path. |
 > | Zeroization | Enforced by the type system (`Zeroizing<T>`) | `SecurePasskey` only; **not** `WebAuthnPasskey` |
 > | Constant-time comparisons | `subtle` types | Not available |
 > | Memory locking (`mlock`) | Sound (stable buffer address) | Best-effort; GC may move data |
@@ -33,7 +35,7 @@ A cryptographically secure, stateless passkey and secret key generator engineere
 
 4. **Volatile Memory Sanitization & Destruction**:
    - Standard Python strings (`str`) are immutable and reside in PyMalloc heap arenas until reclaimed by garbage collection.
-   - `passkey-gen` encapsulates secrets inside [`SecurePasskey`](file:///home/deathrok/Desktop/projects/passkey_generator/src/passkey_gen/memory.py), backed by native C buffers (`ctypes`).
+   - The legacy Python encapsulated secrets inside `SecurePasskey`, backed by native C buffers (`ctypes`). It now lives under `legacy/python/` and is not installed.
    - On context exit or `.destroy()`, memory is actively wiped using OS-level `explicit_bzero` / `memset` and zeroized byte-by-byte.
      - **Scope of this guarantee (Python):** it applies to `SecurePasskey` only. It does **not** apply to `WebAuthnPasskey`, whose `destroy()` sets `self._private_key = None` without wiping, and which never calls `zeroize_buffer` or `mlock`.
    - Implements memory locking (`mlock`) to pin secret buffers in physical RAM and prevent paging to unencrypted swap disks.
@@ -113,162 +115,57 @@ Stated because a limitation the user is not told about is a limitation they will
   verified, and this tool should not be trusted on macOS or Windows until that work lands.
 
 ---
+## Status: there is no installable command yet
 
-## Installation & Environment
+**TokenGen 1.0 has not been released.** The `pip install .` path that used to install a `passkey-gen` command
+**has been removed**, because the only implementation that could back it was the legacy Python, which violates
+this project's own invariants. See [`legacy/python/README.md`](legacy/python/README.md) and `SECURITY.md`.
 
-The virtual environment is set up at `pass_`:
+**This is deliberate.** Installing **no** command is honest; installing the **wrong** one is not. The Rust
+CLI is feature **F4**, and it does not exist yet.
 
-```bash
-# Activate virtual environment
-source pass_/bin/activate
+| I want to… | Where to go |
+|---|---|
+| Build and test the Rust library | `cargo test --release --locked --features test-hooks -p tokengen` |
+| Read the design and the guarantees | [`docs/`](docs/) — `F1_DESIGN.md`, `F2_DESIGN.md`, `F3_DESIGN.md`, `F3.5_DESIGN.md` |
+| Know what this tool cannot do | [the section above](#what-this-tool-cannot-do) — **read this before trusting anything** |
+| Report a vulnerability | [`SECURITY.md`](SECURITY.md) |
+| Understand the roadmap and the gate | [`plan/PROJECT_PLAN.md`](plan/PROJECT_PLAN.md) |
+| See what is being worked on | [`plan/mailroom/`](plan/mailroom/) and [`plan/reports/`](plan/reports/) |
 
-# Install in editable mode
-pip install -e .
-```
+## Building and testing
 
----
-
-## Command-Line Usage
-
-The command `passkey-gen` is installed directly into `pass_/bin/passkey-gen`.
-
-### 1. Default (32 characters, alphanumeric)
-```bash
-./pass_/bin/passkey-gen
-```
-*Output:*
-```
-qnlvqsXzkJUAOIZNazv6AUgKvDlsguVP
-```
-
-### 2. High-Entropy 64 characters
-```bash
-./pass_/bin/passkey-gen -l 64
-```
-
-### 3. Custom Length & Character Set Preset
-```bash
-# 50 characters using complex punctuation set
-./pass_/bin/passkey-gen -l 50 -c complex
-
-# 32 characters in hexadecimal
-./pass_/bin/passkey-gen -l 32 -c hex
-
-# URL-safe base64
-./pass_/bin/passkey-gen -l 64 -c base64url
-
-# Human-readable (excludes 0/O, 1/l/I to prevent ambiguity)
-./pass_/bin/passkey-gen -l 32 -c readable
-```
-
-### 4. Display Information-Theoretic Entropy
-```bash
-./pass_/bin/passkey-gen -l 32 --show-entropy
-```
-*Output:*
-```
-[*] Charset size: 62 chars | Length: 32 chars | Entropy: 190.53 bits
-qnlvqsXzkJUAOIZNazv6AUgKvDlsguVP
-```
-
-### 5. Ephemeral Zero-Trace Display (Terminal Scrollback Defense)
-```bash
-# Displays passkey in an alternate screen buffer with live countdown (15s default)
-# Exiting or expiry completely reverts terminal screen leaving 0 scrollback lines
-./pass_/bin/passkey-gen -l 64 -e
-
-# Custom duration (e.g. 10 seconds)
-./pass_/bin/passkey-gen -l 32 -e 10
-```
-
-### 6. Secure Clipboard with Automated Auto-Wipe
-```bash
-# Copies to clipboard (Wayland/X11/OSC 52) and automatically wipes clipboard after 20s
-./pass_/bin/passkey-gen -l 32 -C
-
-# Combine Ephemeral Display + Clipboard: wipes both when dismissed
-./pass_/bin/passkey-gen -l 64 -e -C
-
-# Custom clipboard auto-wipe timeout (e.g. 45 seconds)
-./pass_/bin/passkey-gen -l 64 -C --copy-timeout 45
-```
-
-### 7. Piping / Silent Mode
-```bash
-./pass_/bin/passkey-gen -l 64 -q
-```
-
-### 8. Kernel Process Defense Audit
-```bash
-./pass_/bin/passkey-gen --audit
-```
-*Output:*
-```
-[*] Linux Process Defense Audit:
-  - Core Dumps Disabled (RLIMIT_CORE=0): [SECURE]
-  - Non-Dumpable (PR_SET_DUMPABLE=0):     [SECURE] (ptrace & /proc/mem blocked)
-  - No New Privileges (PR_SET_NO_NEW_PRIVS=1): [SECURE]
-  - Memory Lock Available (mlock):       [ENABLED]
-```
-
-### 9. FIDO2 / WebAuthn Asymmetric Passkey Generation
-```bash
-# Generate standard ES256 (NIST P-256) WebAuthn Passkey
-./pass_/bin/passkey-gen --webauthn
-
-# Generate Ed25519 (EdDSA) WebAuthn Passkey
-./pass_/bin/passkey-gen --webauthn --webauthn-alg Ed25519
-
-# Export in WebAuthn-compliant JSON format
-./pass_/bin/passkey-gen --webauthn --json
-
-# Export encrypted PKCS#8 private key
-./pass_/bin/passkey-gen --webauthn --export-private --passphrase "MySecurePassphrase"
-```
-
----
-
-## Python API Usage
-
-### 1. Symmetric High-Entropy Tokens (Zero Caching)
-```python
-from passkey_gen import PasskeyGenerator, CharsetPreset
-
-generator = PasskeyGenerator()
-
-# Use context manager: memory is wiped immediately upon exiting the block
-with generator.generate(length=32, charset=CharsetPreset.ALPHANUMERIC) as key:
-    secret = key.get_value()
-    # Consume secret (e.g. hash it with Argon2 or send over secure socket)
-
-# Here, key memory has been actively zeroized via explicit_bzero/memset
-# key.get_value() will raise RuntimeError if accessed!
-```
-
-### 2. FIDO2 / WebAuthn Resident Credentials
-```python
-from passkey_gen import WebAuthnAlgorithm, generate_webauthn_passkey
-
-# Generate an ES256 or Ed25519 resident credential
-with generate_webauthn_passkey(WebAuthnAlgorithm.ES256) as passkey:
-    print("Credential ID:", passkey.credential_id)
-    print("Public Key (COSE Base64url):", passkey.public_key_cose_b64)
-    print("Public Key (JWK):", passkey.public_key_jwk)
-
-    # Sign an authentication challenge assertion (clientDataHash)
-    signature = passkey.sign_assertion(b"test_challenge_hash_32_bytes___")
-
-# WARNING: contrary to earlier versions of this document, exiting this block does
-# NOT wipe the private key. WebAuthnPasskey.destroy() sets self._private_key = None,
-# which drops the reference without zeroizing memory. Do not rely on this class to
-# protect long-lived private key material. See docs/LANGUAGE_DECISION.md §4.
-```
-
----
-
-## Running the Test Suite
+Requires **Rust 1.85** (pinned in `rust-toolchain.toml`).
 
 ```bash
-./pass_/bin/pytest -v --cov=passkey_gen
+cargo build --release --locked
+cargo test --release --locked --features test-hooks -p tokengen      # the main crate
+cargo test --release --locked -p tokengen-sys                        # the platform crate
+cargo clippy --all-targets --features test-hooks -- -D warnings
+cargo fmt --check
+./scripts/cfg_check.sh                                               # compiles the deferred cfg branches
 ```
-All tests verify memory zeroization, modulo bias elimination (Chi-square statistical goodness-of-fit), lifecycle guarantees, and input validation.
+
+The whole suite runs in **CI on Linux, macOS and Windows** for every push. A green matrix means the code
+**compiles and the tests pass** on those platforms — it does **not** mean the tool works on them; see the
+platform note in [What This Tool Cannot Do](#the-usb-session-guard-f35).
+
+## What is actually implemented
+
+| Feature | State |
+|---|---|
+| **F1** — CSPRNG entropy | **Frozen.** Kernel CSPRNG, no user-space PRNG state. |
+| **F2** — charset / rejection sampling | **Frozen.** Zero modulo bias. |
+| **F3** — zeroization, memory locking, core-dump suppression | **Frozen.** Linux only. |
+| **F3.5** — USB session guard | **Frozen** at `3c9dcbc`. Linux only. |
+| **F4** — CLI | **Not started.** Until it exists there is no user-facing tool. |
+| F5–F10 | Not started. See the roadmap. |
+
+## A note on the legacy Python
+
+`legacy/python/` holds the original Python prototype. It is **unmaintained, not installed, and not part of
+the trust path**, and its own README explains why it cannot satisfy G3 (fail-closed). It is kept only because
+it is the sole end-to-end WebAuthn/CBOR reference in the repository, which **F4** will want when that
+behaviour is rebuilt in Rust.
+
+**Do not use it. Do not rely on its tests** — they are not run by any CI job.

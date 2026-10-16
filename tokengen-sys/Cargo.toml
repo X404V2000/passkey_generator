@@ -1,6 +1,7 @@
 [package]
 name = "tokengen-sys"
 version = "0.1.0"
+license = "Apache-2.0"
 edition = "2021"
 # Minimum supported Rust version. Measured, not aspirational — 1.85, driven by `zeroize` 1.9.0
 # (edition 2024). Kept in step with the main crate. See AM-005 / DEFECT-001 D3.
