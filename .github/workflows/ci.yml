@@ -148,6 +148,25 @@ jobs:
         shell: bash
         run: bash scripts/cfg_check.sh
 
+      # ---------------------------------------------------------------------------------------------
+      # F3.6 — host footprint (G11/G12/G13).
+      #
+      # The static check asserts the ABSENCE of write APIs and runtime env reads in shipped code; the
+      # dependency check asserts the SHIPPED graph matches its allow-list. Both are portable and run on
+      # all three runners.
+      #
+      # The BEHAVIOURAL check is a test (tests/f36_footprint.rs) and runs with the normal test steps, so
+      # it needs no step here. The syscall-level corroboration (strace) is NOT wired in: see F3.6 §2.3 and
+      # the limitations — it is Linux-only and is deliberately absent rather than half-added.
+      # ---------------------------------------------------------------------------------------------
+      - name: F3.6 static footprint check (G11/G12/G13)
+        shell: bash
+        run: bash scripts/footprint_check.sh
+
+      - name: F3.6 shipped-dependency check
+        shell: bash
+        run: bash scripts/dependency_check.sh
+
   # ---------------------------------------------------------------------------------------------
   # Advisories: dependency audit. Separate job so a new advisory fails loudly and independently.
   # ---------------------------------------------------------------------------------------------
