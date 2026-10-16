@@ -1,17 +1,38 @@
-# F3.6 — the SHIPPED dependency graph.
+# F3.6 — the SHIPPED dependency graph, PER PLATFORM.
 #
-# These are the crates compiled into a release build of the tool. The invariants G11-G13 say the TOOL
-# leaves no trace on the host — but the real surface is the code the tool LINKS. A dependency that writes
-# a cache file violates G11 without a single line of our own code changing.
+# These are the crates compiled into a release build. The invariants G11-G13 say the TOOL leaves no trace on
+# the host — but the real surface is the code the tool LINKS. A dependency that writes a cache file violates
+# G11 without a single line of our own code changing.
 #
-# This list is asserted by scripts/footprint_check.sh's companion check. ADDING A CRATE requires a
-# recorded amendment naming its G11-G13 justification (see the F3.6 blueprint §2.1). That is the normal
-# rule for changing a frozen claim, not a new burden: the graph is four foundational crates.
+# ------------------------------------------------------------------------------------------------
+# WHY THIS FILE IS PER-PLATFORM, WHICH IT WAS NOT AT FIRST
 #
-# Generated from: cargo tree --locked -p tokengen --edges normal
+# The first version of this list was a single universal set, and **CI failed on Windows** because of it:
+# `libc` is declared under `[target.'cfg(unix)'.dependencies]`, so it is NOT in the Windows graph.
 #
-# name version
+# That is worth recording as more than a typo. The check had encoded an assumption — "the shipped graph is
+# the same everywhere" — that was never verified and is false. **A probe narrower than the claim it
+# supported**, which is the failure this project records most often. CI caught it, which is what CI is for.
+#
+# The corrected form is what the check should always have been: the graph is a property of a TARGET, so the
+# allow-list is keyed by target.
+#
+# ADDING A DEPENDENCY: add it to the relevant section(s) in the same commit as the amendment justifying it
+# against G11-G13. If you have not written that amendment, the failure is the point.
+#
+# Generated from: cargo tree --locked -p tokengen --edges normal --target <triple>
+# ------------------------------------------------------------------------------------------------
+
+[unix]
+# Linux and macOS. `libc` is here because it is declared `[target.'cfg(unix)'.dependencies]`, and it is also
+# pulled transitively by `getrandom` on unix.
 getrandom 0.2.17
 cfg-if 1.0.5
 libc 0.2.189
+zeroize 1.9.0
+
+[windows]
+# No `libc`. This is the difference that the first version of this file got wrong.
+getrandom 0.2.17
+cfg-if 1.0.5
 zeroize 1.9.0
