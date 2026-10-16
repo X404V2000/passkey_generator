@@ -100,7 +100,14 @@ Stated because a limitation the user is not told about is a limitation they will
   has the same identity. It does not check that the filesystem on it is intact, uncorrupted, or unmodified.
 - **An attacker who images the medium wins.** The guard binds to a device's identity — its serial and
   filesystem UUID. It cannot detect data copied onto identical media, because identity is a property of the
-  device, not of its contents.
+  device, not of its contents. This also covers a device that under-reports its own serial length: it would
+  yield a shorter (prefix) serial, but two different devices still differ, so a swap is still detected.
+- **The device identification is verified against USB hardware; the platform backends are not verified at
+  all.** What has been exercised on real hardware is the Linux device path, with USB drives attached — a
+  removable drive is accepted, an internal root is refused, and identity survives unplugging and re-plugging.
+  What has **not** been exercised anywhere is the macOS and Windows backend, because those backends do not
+  exist yet; those platforms are compiled by CI and then refuse with `NotSupported`. Compiled is not
+  verified, and this tool should not be trusted on macOS or Windows until that work lands.
 
 ---
 
