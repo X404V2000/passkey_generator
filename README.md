@@ -92,10 +92,13 @@ Stated because a limitation the user is not told about is a limitation they will
 - **A device soldered internally but attached over USB is treated as removable.** It is indistinguishable
   from an external drive by any signal the operating system exposes. Refusing every USB device to defend
   against that configuration would reject every external drive.
-- **Removability is decided by how a device is attached, not by the kernel's `removable` flag.** The flag
-  cannot distinguish a USB enclosure that presents a fixed disk (which reports `0`) from an internal drive
-  (which also reports `0`). A tool that trusted the flag alone would refuse a legitimate external hard
-  drive.
+- **Removability is decided mainly by how a device is attached, not by the kernel's `removable` flag.** The
+  flag cannot distinguish a USB enclosure that presents a fixed disk (which reports `0`) from an internal
+  drive (which also reports `0`), so a tool that trusted the flag alone would refuse a legitimate external
+  hard drive. A **removable** transport (USB, eMMC, Thunderbolt, FireWire) is accepted on that basis alone;
+  a **fixed** transport (NVMe, ATA, SATA) is accepted if the kernel reports the media as removable, which is
+  the correct behaviour for a card reader or a media slot. So the rule is not "the flag never matters" — it
+  matters for fixed transports, by design.
 - **The guard verifies the device, not the filesystem.** It confirms the same device is still present and
   has the same identity. It does not check that the filesystem on it is intact, uncorrupted, or unmodified.
 - **An attacker who images the medium wins.** The guard binds to a device's identity — its serial and
