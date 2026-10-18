@@ -422,11 +422,8 @@ mod platform {
         //
         //    The binding is ENCLOSURE-level and is labelled as such, so the caller can state the narrowed
         //    guarantee rather than present it as disk-level.
-        if let Some(bridge) = usb_bridge_serial(disk) {
-            return Ok((bridge, SerialSource::Enclosure));
-        }
-
-        Err(DeviceReadError::SerialUnreadable)
+        let bridge = usb_bridge_serial(disk)?;
+        Ok((bridge, SerialSource::Enclosure))
     }
 
     /// The serial of the USB bridge the disk is attached through: the first ancestor of
@@ -435,27 +432,117 @@ mod platform {
     /// Measured on the maintainer's drives: for a SanDisk stick this equals the disk serial (the bridge
     /// passes it through), for an HGST HDD it is a *different* number (the enclosure), and for a generic
     /// flash drive it is the only number that exists.
-    fn usb_bridge_serial(disk: &str) -> Option<String> {
+    fn usb_bridge_serial(disk: &str) -> Result<String, DeviceReadError> {
         let link = format!("/sys/block/{disk}/device");
-        let mut cur = fs::canonicalize(&link).ok()?;
+        let start = fs::canonicalize(&link).map_err(|_| DeviceReadError::SerialUnreadable)?;
 
-        // Walk upward. Bounded by the depth of sysfs, and it stops at the root.
+        // Collect the ancestor chain, nearest first, as (path, serial-file-contents).
+        //
+        // The DECISION is then made by `choose_enclosure_serial`, which is pure and therefore testable
+        // against a synthetic chain. This split exists because of DEFECT-012: the bug was unreachable on any
+        // drive we own, so a fix that could only be exercised on exotic hardware would not be a fix.
+        let mut chain: Vec<(String, Option<String>)> = Vec::new();
+        let mut cur = start;
         loop {
-            let candidate = cur.join("serial");
-            if let Ok(s) = fs::read_to_string(&candidate) {
-                let t = s.trim();
-                if !t.is_empty() {
-                    return Some(t.to_string());
-                }
-            }
+            let serial = fs::read_to_string(cur.join("serial")).ok();
+            chain.push((cur.to_string_lossy().to_string(), serial));
             if !cur.pop() {
-                return None;
+                break;
             }
-            // Never leave the device tree: a `serial` file in an unrelated ancestor would be nonsense, and
-            // stopping at /sys avoids walking into the rest of the filesystem.
+            // Never leave the device tree.
             if !cur.starts_with("/sys") {
-                return None;
+                break;
             }
+        }
+
+        choose_enclosure_serial(&chain)
+    }
+
+    /// **Decide which ancestor's serial is the enclosure's** — pure, so it can be tested against a synthetic
+    /// chain.
+    ///
+    /// `chain` is nearest-first: `(sysfs path, contents of that path's `serial` file, if it has one)`.
+    ///
+    /// # The defect this exists to prevent (DEFECT-012)
+    ///
+    /// The first implementation returned the serial of the **first ancestor with a non-empty serial**. On a real
+    /// chain that is correct, because the device comes before the host controller:
+    ///
+    /// ```text
+    /// …/usb1/1-3/1-3.2   the device           1223907121600042
+    /// …/usb1             the HOST CONTROLLER 0000:00:15.0
+    /// ```
+    ///
+    /// But when the device's serial is **absent or empty**, the walk continued and returned the **controller's**
+    /// — a PCI address, identical for **every drive on that controller**. Two different drives would then share
+    /// one identity, and swapping them would be **undetected**: G17 defeated, silently.
+    ///
+    /// It also contradicted `read_serial`'s own rule three lines above — that a readable-but-empty serial is "NOT
+    /// the same as absent" and must not fall through "to a different mechanism that might yield a value for a
+    /// different reason". The walk did exactly that.
+    ///
+    /// # The rules
+    ///
+    /// 1. **Never return a bus-level serial.** In sysfs a USB **device or hub** is a component containing `-`
+    ///    (`1-3.2`, `2-2.3`); a **root hub / controller** is `usb<digits>` (`usb1`). Anything without `-` is
+    ///    infrastructure, not the drive's enclosure.
+    /// 2. **A readable-but-empty `serial` stops the search, it does not continue it** — matching `read_serial`'s
+    ///    stated rule. Continuing is how a value answering a *different* question gets substituted.
+    /// 3. **Reject controller-shaped values outright** (`dddd:dd:dd.d`): the PCI address form is recognisable
+    ///    and its meaning is known, so it is refused as a belt-and-braces check even if rule 1 were bypassed.
+    /// 4. **Fail closed:** no acceptable serial means `SerialUnreadable`, never a guess.
+    pub(super) fn choose_enclosure_serial(
+        chain: &[(String, Option<String>)],
+    ) -> Result<String, DeviceReadError> {
+        for (path, serial) in chain {
+            let component = std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            // Rule 1: only a component naming a DEVICE or HUB (`…-…`) can carry the enclosure identity.
+            // A root hub (`usb1`) is the controller's own hub, shared by every port.
+            let is_device_or_hub = component.contains('-');
+            if !is_device_or_hub {
+                continue;
+            }
+
+            // Rule 2: an empty serial STOPS the search. It is a device that declined to report one, not an
+            // invitation to look higher up for something else's number.
+            if let Some(text) = serial {
+                let t = text.trim();
+                if t.is_empty() {
+                    return Err(DeviceReadError::SerialUnreadable);
+                }
+                // Rule 3: a controller-shaped value is never the enclosure's.
+                if looks_like_pci_address(t) {
+                    continue;
+                }
+                return Ok(t.to_string());
+            }
+        }
+
+        // Rule 4.
+        Err(DeviceReadError::SerialUnreadable)
+    }
+
+    /// True for `dddd:dd:dd.d` (or with more/fewer hex digits in each group) — the PCI address form.
+    pub(super) fn looks_like_pci_address(s: &str) -> bool {
+        let groups: Vec<&str> = s.split(':').collect();
+        if groups.len() != 3 {
+            return false;
+        }
+        let all_hex = |g: &str| !g.is_empty() && g.chars().all(|c| c.is_ascii_hexdigit());
+        if !groups[..2].iter().all(|g| all_hex(g)) {
+            return false;
+        }
+        // Last group carries the function: `dd.d`.
+        let last = groups[2];
+        match last.split_once('.') {
+            Some((dev, func)) => {
+                all_hex(dev) && !func.is_empty() && func.chars().all(|c| c.is_ascii_hexdigit())
+            }
+            None => false,
         }
     }
 
@@ -567,6 +654,128 @@ mod platform {
             // component that did not fail.
             DeviceReadError::RemovabilityUnreadable | DeviceReadError::NotRemovable => None,
             _ => None,
+        }
+    }
+
+    // THE `#[cfg(test)]` IS ESSENTIAL AND WAS LOST when this module was moved inside `platform`.
+    // Without it the test code compiles into release builds. Restored, and the gate is the recognised exact
+    // form so `cfg_check.sh` inverts it correctly.
+    #[cfg(test)]
+    mod enclosure_serial_tests {
+        //! Unit tests for the enclosure-serial decision (DEFECT-012).
+        //!
+        //! The functions live inside the platform module — they are Linux-only mechanism, like everything else
+        //! that reads sysfs — so the imports go through it.``
+        //!
+        //! These use a **synthetic ancestor chain**, deliberately: the defect requires a drive whose serial is
+        //! absent or empty, and every drive available when it was found has one. A fix testable only on exotic
+        //! hardware would not be a fix.
+
+        use super::{choose_enclosure_serial, looks_like_pci_address};
+        use crate::device::DeviceReadError;
+
+        /// Build a chain nearest-first from `(component, serial)`.
+        fn chain(items: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+            items
+                .iter()
+                .map(|(name, s)| {
+                    (
+                        format!("/sys/devices/pci0000:00/0000:00:15.0/usb1/{name}"),
+                        s.map(|v| v.to_string()),
+                    )
+                })
+                .collect()
+        }
+
+        /// **The device's serial is returned when it has one.**
+        #[test]
+        fn device_serial_is_preferred() {
+            let c = chain(&[
+                ("1-3/1-3.2", Some("1223907121600042")),
+                ("1-3", None),
+                ("usb1", Some("0000:00:15.0")),
+            ]);
+            assert_eq!(
+                choose_enclosure_serial(&c),
+                Ok("1223907121600042".to_string())
+            );
+        }
+
+        /// **DEFECT-012: an EMPTY device serial must not fall through to the host controller.**
+        ///
+        /// This is the defect, reproduced exactly: the controller's `0000:00:15.0` is a PCI address shared by
+        /// every drive on that controller. Returning it would give two different drives one identity, and a swap
+        /// between them would be **undetected** — G17 defeated.
+        #[test]
+        fn empty_device_serial_never_reaches_the_controller() {
+            let c = chain(&[
+                ("1-3/1-3.2", Some("   ")), // readable, but empty after trim
+                ("1-3", None),
+                ("usb1", Some("0000:00:15.0")),
+            ]);
+            assert_eq!(
+                choose_enclosure_serial(&c),
+                Err(DeviceReadError::SerialUnreadable),
+                "an empty device serial must be an ERROR, not a reason to look higher up. Falling through \
+                 returns the controller's PCI address, which is identical for every port."
+            );
+        }
+
+        /// **DEFECT-012: an ABSENT device serial must not fall through either.**
+        #[test]
+        fn absent_device_serial_never_reaches_the_controller() {
+            let c = chain(&[
+                ("1-3/1-3.2", None),
+                ("1-3", None),
+                ("usb1", Some("0000:00:15.0")),
+            ]);
+            assert_eq!(
+                choose_enclosure_serial(&c),
+                Err(DeviceReadError::SerialUnreadable)
+            );
+        }
+
+        /// **A bus-level (`usb1`) serial is never accepted, even when it is the only one.**
+        #[test]
+        fn bus_level_serial_is_never_accepted() {
+            let c = chain(&[("usb1", Some("0000:00:15.0"))]);
+            assert_eq!(
+                choose_enclosure_serial(&c),
+                Err(DeviceReadError::SerialUnreadable)
+            );
+        }
+
+        /// **A controller-shaped value is rejected even if it sits on a device component.**
+        ///
+        /// Belt-and-braces: rule 1 already excludes bus components, but an unusual topology could place a
+        /// PCI-shaped string on a `…-…` node, and its meaning would still be a controller address.
+        #[test]
+        fn pci_shaped_value_is_rejected_on_any_component() {
+            let c = chain(&[("1-3/1-3.2", Some("0000:00:15.0"))]);
+            assert_eq!(
+                choose_enclosure_serial(&c),
+                Err(DeviceReadError::SerialUnreadable)
+            );
+        }
+
+        /// A device **hub** (`…-…`) may carry a legitimately different serial and is accepted.
+        #[test]
+        fn a_hub_component_is_acceptable() {
+            let c = chain(&[("1-3", Some("HUB12345")), ("usb1", Some("0000:00:15.0"))]);
+            assert_eq!(choose_enclosure_serial(&c), Ok("HUB12345".to_string()));
+        }
+
+        /// The PCI-shape detector recognises the real form and does not misfire on ordinary serials.
+        #[test]
+        fn pci_shape_detection() {
+            assert!(looks_like_pci_address("0000:00:15.0"));
+            assert!(looks_like_pci_address("0000:01:00.0"));
+            // Real device serials must not be mistaken for addresses.
+            assert!(!looks_like_pci_address("1223907121600042"));
+            assert!(!looks_like_pci_address("RBF50A152X65YP"));
+            assert!(!looks_like_pci_address("03022028102425210844"));
+            assert!(!looks_like_pci_address("HUB12345"));
+            assert!(!looks_like_pci_address(""));
         }
     }
 }

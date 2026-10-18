@@ -148,6 +148,49 @@ GATE_TO_INVERSE = {
     "#[cfg(not(target_os = \"linux\"))]": "#[cfg(all())]",
 }
 
+# ---------------------------------------------------------------------------------------------
+# GATES THE INVERSION MAP DOES NOT KNOW ARE A HOLE, NOT A NON-EVENT.
+#
+# The map above matches only exact attribute strings. A gate written any other way — for instance
+# `#[cfg(all(test, target_os = "linux"))]` — is left UNINVERTED, so the "non-Linux" pass compiles the LINUX
+# branch and reports success while covering nothing. That is worse than a failed check: it is a passing check
+# that asserts the opposite of the truth.
+#
+# Found while fixing DEFECT-012: a test module carrying that gate compiled in the inverted pass, and the only
+# visible symptom was an unrelated-looking import error.
+#
+# Any cfg line that mentions `unix` or `target_os` but is NOT a recognised gate is now FATAL. Silence about a
+# platform condition is not neutrality — it means the file's platform behaviour is not being checked.
+RECOGNISED_PREFIXES = ("#[cfg(unix)]", "#[cfg(not(unix))]", "#[cfg(target_os = \"linux\")]",
+                       "#[cfg(not(target_os = \"linux\"))]")
+
+def unrecognised_platform_gates(text):
+    found = []
+    for i, line in enumerate(text.split("\n"), 1):
+        stripped = line.strip()
+        if not stripped.startswith("#[cfg") and not stripped.startswith("#!["):
+            continue
+        if ("unix" in stripped or "target_os" in stripped) and stripped not in RECOGNISED_PREFIXES:
+            found.append((i, stripped))
+    return found
+
+unrecognised = []
+for path in files:
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        continue
+    for line_no, gate in unrecognised_platform_gates(text):
+        unrecognised.append(f"{path}:{line_no}: {gate}")
+
+if unrecognised:
+    print("FATAL: platform gates this check cannot invert. They would be left UNINVERTED, so the")
+    print("       'non-Linux' pass would compile the LINUX branch and report success while covering nothing.")
+    print("       Either write the gate in a recognised form, or teach this script to invert it.")
+    for u in unrecognised:
+        print(f"         {u}")
+    raise SystemExit(1)
+
 for path in files:
     name = os.path.basename(path)
     lines = open(path).read().splitlines(keepends=True)
