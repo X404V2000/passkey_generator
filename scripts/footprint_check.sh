@@ -39,21 +39,37 @@ EXPECTED_CHECKS=4
 fail=0
 checks_run=0
 
-# Strips `//` line comments, `/* */` block comments, and string/char literals, so that a match is a match
-# on CODE. Deliberately conservative: it may over-strip, and over-stripping causes a false FAIL (visible)
-# rather than a false PASS (invisible), which is the correct direction for a security gate.
+# Strip ONLY `#!`/`#` attribute lines? No — strip NOTHING. Match the raw text.
+#
+# ------------------------------------------------------------------------------------------------
+# THIS USED TO STRIP COMMENTS AND STRING LITERALS WITH REGEXES, AND THAT WAS DEFEATED.
+#
+# Found by Grace attacking her own brief's case A2: an order-dependent regex stripper DESYNCHRONISES on
+# valid Rust. One line:
+#
+#     pub fn p() { let c = '"'; std::fs::write("/tmp/c", b"x").ok(); }
+#
+# The string-literal rule ran before the char-literal rule, treated the double quote INSIDE '\"' as the
+# opening of a string, and consumed up to the next double quote — which sat inside the write's argument
+# list. Observed transformation:
+#
+#     after str : pub fn p() { let c = '""/tmp/c""x").ok(); }
+#                                       ^^^^^^^^^^^^^ the call head `std::fs::write(` is GONE
+#
+# So a write call could be HIDDEN by writing `'"'` earlier on the same line. That is a false PASS, which
+# is the dangerous direction.
+#
+# THE FIX IS NOT A BETTER REGEX. Any regex approximating Rust's lexical grammar will desynchronise
+# somewhere, and each patch invites the next bypass. So this strips NOTHING and matches the raw source.
+#
+# The cost is false FAILS: a comment or a string that mentions `fs::write` now trips the check. That is the
+# SURVIVABLE direction — a false FAIL is visible, blocks the build, and is fixed by rewording a comment; a
+# false PASS ships a tool that writes to the host. Where a legitimate mention must exist (an explanatory
+# comment in shipped code), the right response is to move the explanation out of `src/` or to reword it —
+# not to make the checker blind again.
+# ------------------------------------------------------------------------------------------------
 strip_comments() {
-    python3 - "$1" <<'PYEOF'
-import re, sys
-src = open(sys.argv[1], encoding='utf-8', errors='replace').read()
-# Block comments first (non-greedy), then line comments, then string-ish literals.
-src = re.sub(r'/\*.*?\*/', ' ', src, flags=re.S)
-src = re.sub(r'//[^\n]*', ' ', src)
-src = re.sub(r'r#*".*?"#*', '""', src, flags=re.S)
-src = re.sub(r'b?".*?(?<!\\)"', '""', src, flags=re.S)
-src = re.sub(r"'(?:\\.|[^'\\])'", "''", src)
-print(src)
-PYEOF
+    cat "$1"
 }
 
 # $1 = human name, $2 = PCRE pattern, $3 = the fix to suggest
@@ -110,7 +126,7 @@ echo
 # trivial to fix), while a bypassed alias is a false PASS (invisible and dangerous).
 check_absent \
     "G11: no file-creation or write capability in shipped code (calls, references, and aliases)" \
-    '(std::fs::write|fs::write|std::fs::File::create|fs::File::create|File::create|OpenOptions|std::fs::create_dir|fs::create_dir|create_dir_all|std::fs::remove_file|fs::remove_file|std::fs::remove_dir|fs::remove_dir|remove_dir_all|std::fs::rename|fs::rename|std::fs::copy|fs::copy|std::fs::set_permissions|fs::set_permissions|std::io::Write|write_all|write!|write_fmt)' \
+    '(std::fs::write|fs::write|std::fs::File::create|fs::File::create|File::create|File::options|fs::File::options|OpenOptions|std::fs::create_dir|fs::create_dir|create_dir_all|std::fs::remove_file|fs::remove_file|std::fs::remove_dir|fs::remove_dir|remove_dir_all|std::fs::rename|fs::rename|std::fs::copy|fs::copy|std::fs::set_permissions|fs::set_permissions|std::fs::hard_link|fs::hard_link|std::fs::soft_link|fs::soft_link|std::fs::set_file_times|fs::set_file_times|std::io::Write|std::io::copy|io::copy|BufWriter|write_all|write!|writeln!|write_fmt|write_str)' \
     "G11 forbids writing files on the host. If a write is genuinely required, it needs a recorded amendment. Note this matches REFERENCES and ALIASES too, so 'let w = std::fs::write' is caught."
 
 # ---------------------------------------------------------------------------------------------

@@ -68,12 +68,20 @@ fn watched_paths() -> Vec<PathBuf> {
 ///
 /// Bounded deliberately: an unbounded walk of `$HOME` on a developer machine can take minutes and dwarf the
 /// test it is supporting. The bound is recorded in the output so the reader knows what was actually walked.
-fn snapshot(root: &Path, max_depth: usize, max_entries: usize) -> BTreeSet<String> {
+/// Returns the observed entries **and whether the bound was hit**.
+///
+/// The second value is the point. A bounded walk that silently stops is a walk whose "no changes"
+/// result means less than it appears — Grace's category D in the verification brief. The caller must
+/// treat `truncated == true` as a failure of the *evidence*, not a pass.
+fn snapshot(root: &Path, max_depth: usize, max_entries: usize) -> (BTreeSet<String>, bool) {
     let mut out = BTreeSet::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut truncated = false;
 
     while let Some((dir, depth)) = stack.pop() {
         if out.len() >= max_entries {
+            // Hit the cap: the snapshot is INCOMPLETE for this root.
+            truncated = true;
             break;
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -96,7 +104,10 @@ fn snapshot(root: &Path, max_depth: usize, max_entries: usize) -> BTreeSet<Strin
             }
         }
     }
-    out
+    if out.len() >= max_entries {
+        truncated = true;
+    }
+    (out, truncated)
 }
 
 /// **The tool leaves no trace in the watched paths — and the same run detects a planted write.**
@@ -128,12 +139,33 @@ fn no_host_footprint_in_watched_paths() {
          depends on actually watching something."
     );
 
-    let before: Vec<_> = watched
-        .iter()
-        .map(|p| (p.clone(), snapshot(p, MAX_DEPTH, MAX_ENTRIES)))
-        .collect();
+    let mut before = Vec::new();
+    let mut truncated_paths = Vec::new();
+    for p in &watched {
+        let (set, truncated) = snapshot(p, MAX_DEPTH, MAX_ENTRIES);
+        println!(
+            "  watched {} -> {} entries{}",
+            p.display(),
+            set.len(),
+            if truncated { "  [TRUNCATED]" } else { "" }
+        );
+        if truncated {
+            truncated_paths.push(p.clone());
+        }
+        before.push((p.clone(), set));
+    }
     let total: usize = before.iter().map(|(_, s)| s.len()).sum();
     println!("  snapshot: {total} entries observed before");
+
+    // A truncated snapshot would make the diff below compare incomplete pictures and could MISS a
+    // footprint in the unwalked remainder. That is a failure of the evidence, so it fails the test.
+    assert!(
+        truncated_paths.is_empty(),
+        "the snapshot hit its bound for {:?}. The 'no footprint observed' result would then cover only the \
+         walked part, and a footprint in the unwalked remainder would be invisible. Raise MAX_ENTRIES \
+         deliberately (and say so) rather than letting the check silently weaken.",
+        truncated_paths
+    );
 
     assert!(
         total > 0,
@@ -177,7 +209,7 @@ fn no_host_footprint_in_watched_paths() {
 
     let after: Vec<_> = watched
         .iter()
-        .map(|p| (p.clone(), snapshot(p, MAX_DEPTH, MAX_ENTRIES)))
+        .map(|p| (p.clone(), snapshot(p, MAX_DEPTH, MAX_ENTRIES).0))
         .collect();
 
     let mut changes = Vec::new();
@@ -216,7 +248,7 @@ fn no_host_footprint_in_watched_paths() {
     let probe_dir = probe_dir_found
         .cloned()
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    let probe_before = snapshot(&probe_dir, MAX_DEPTH, MAX_ENTRIES);
+    let (probe_before, _) = snapshot(&probe_dir, MAX_DEPTH, MAX_ENTRIES);
 
     let probe_file = probe_dir.join(format!("f36_detection_probe_{}", std::process::id()));
     let wrote = std::fs::write(&probe_file, b"planted");
@@ -226,7 +258,7 @@ fn no_host_footprint_in_watched_paths() {
         probe_dir.display()
     );
 
-    let probe_after = snapshot(&probe_dir, MAX_DEPTH, MAX_ENTRIES);
+    let (probe_after, _) = snapshot(&probe_dir, MAX_DEPTH, MAX_ENTRIES);
     let detected = probe_after
         .difference(&probe_before)
         .any(|e| e.contains(&probe_file.display().to_string()));
