@@ -67,6 +67,31 @@ identical_serial=false   identical_uuid=false
 | 5 | a drive **inserted while the tool runs** | requires an interactive session | the poll-loop race is untested |
 | 6 | a drive whose serial is a **non-ASCII or very long** string | not available | encoding assumptions unverified |
 
+## 4a. The LUKS case, resolved — correct, but for an unrecorded reason
+
+`sda1` is LUKS. Two UUIDs are in play:
+
+| node | UUID | exists when |
+|---|---|---|
+| `/dev/sda1` — the raw **container** | `97f65252-…` | always |
+| `/dev/mapper/luks-97f65252-…` → `dm-0` — the **filesystem inside** | `25e8a061-…` | **only while unlocked** |
+
+`uuid_for_device("/dev/sda1")` returns the **container** UUID, and that is **the right choice**:
+
+* it is **always available**, unlocked or not — `dm-0` does not exist when the drive is locked;
+* it is **stable across lock/unlock cycles**, because locking does not touch the raw partition;
+* it cannot be changed without re-encrypting the container.
+
+**It was chosen by exact-path match, not by that reasoning.** The code looks up the canonical path of the
+*partition node* and returns whatever UUID links to it; the container UUID happens to be that. A future change
+— for example "also accept the UUID of a dm-crypt child", which looks like a harmless robustness improvement —
+would make the identity depend on whether the drive was unlocked, and a **re-locked drive would then appear
+to be a different device**. This is recorded here so that change is visibly a change.
+
+**Multi-partition confusion, the risk P9 expected to find, does not exist:** the lookup is an exact
+`dest == target` comparison on canonicalised paths, so a disk with many partitions yields the UUID of *that*
+partition or `UuidNotFound`. Nothing can be mismatched.
+
 ## 5. What P9 changes
 
 **Nothing in the code.** Its value is the negative result — the table of classes *not* covered — which is what
