@@ -279,27 +279,25 @@ fn run(args: &[String]) -> ExitCode {
             // Deliberately does NOT require the guard to succeed: the point of `status` is to explain WHY
             // the guard refuses. It prints no secret, so it cannot leak one.
             let workdir = PathBuf::from(".");
+            // `status` ALWAYS EXITS 0 when it produced a report, and owns that choice explicitly.
+            //
+            // Grace found the original inconsistency: it exited 3 on a refusal while WRITING to stdout,
+            // which violated the rule the rest of the CLI enforces — "a non-zero exit leaves stdout empty".
+            // Nothing secret was involved, so it was not a leak; but it was an exemption that nobody had
+            // written down, and an undocumented exemption is where the next leak starts.
+            //
+            // Rather than document the exemption, remove it: `status` **succeeded at its job** (it reported
+            // the guard's state), so success is exit 0 and the state lives in the OUTPUT, where a script
+            // reads it. A caller that wants the guard's verdict runs `generate`, whose exit code is the
+            // verdict. That keeps one rule with no exceptions: **non-zero means no stdout**.
+            let report = match SessionGuard::capture(SystemDeviceReader::new(), &workdir) {
+                Ok((_guard, status)) => format!("session guard: {}", describe_refusal(&status)),
+                Err(e) => format!("session guard: unavailable ({e:?})"),
+            };
             println!("tokengen {}", env!("CARGO_PKG_VERSION"));
-            match SessionGuard::capture(SystemDeviceReader::new(), &workdir) {
-                Ok((_guard, status)) => {
-                    println!("session guard: {}", describe_refusal(&status));
-                    let code = if matches!(status, GuardStatus::Present | GuardStatus::Disabled) {
-                        exit::OK
-                    } else {
-                        exit::GUARD_REFUSED
-                    };
-                    return ExitCode::from(code);
-                }
-                Err(e) => {
-                    println!("session guard: unavailable ({e:?})");
-                    let code = if matches!(e, tokengen::session::SessionError::NotSupported) {
-                        exit::UNSUPPORTED
-                    } else {
-                        exit::GUARD_REFUSED
-                    };
-                    return ExitCode::from(code);
-                }
-            }
+            println!("{report}");
+            // Exit 0 unconditionally: a report was produced, which is what `status` was asked to do.
+            return ExitCode::from(exit::OK);
         }
         Parsed::Generate(o) => o,
     };

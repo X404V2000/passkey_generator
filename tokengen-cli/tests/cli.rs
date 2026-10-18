@@ -250,3 +250,57 @@ fn generation_succeeds_from_a_removable_device_if_present() {
         "with the default charset the secret must be alphanumeric"
     );
 }
+
+/// **The rule, with no exceptions: a non-zero exit leaves stdout EMPTY.**
+///
+/// Grace found the original violation: `status` exited 3 on a guard refusal while writing its report to
+/// stdout. Nothing secret was involved — `status` prints device state, not a secret — so it was not a leak.
+/// But it was an **exemption nobody had written down**, and an undocumented exemption is where the next leak
+/// starts.
+///
+/// The fix was to remove the exemption rather than document it: `status` **succeeded at its job** (reporting
+/// the guard's state), so it exits 0 and the state lives in its output. A caller that wants the guard's
+/// verdict runs `generate`, whose exit code is the verdict.
+///
+/// This test enforces the single rule across **every command and every failure mode**, so no future
+/// subcommand can quietly reintroduce an exception.
+#[test]
+fn non_zero_exit_always_leaves_stdout_empty() {
+    // Failing invocations: guard refusals, usage errors, and malformed arguments.
+    let failing: &[&[&str]] = &[
+        &["generate"],
+        &["generate", "-l", "0"],
+        &["generate", "-c", "nope"],
+        &["generate", "--bogus"],
+        &["generate", "-l"],
+        &["generate", "-c"],
+        &["not-a-command"],
+        &[],
+    ];
+
+    for args in failing {
+        let (code, stdout, stderr) = cli(args);
+        assert_ne!(code, 0, "{args:?} was expected to fail; if it now succeeds, add it to the succeeding list instead");
+        assert!(
+            stdout.is_empty(),
+            "RULE VIOLATED: {args:?} exited {code} but wrote to stdout: {stdout:?}. A non-zero exit must \
+             leave stdout empty, with no exceptions — an exemption is where the next leak starts."
+        );
+        assert!(
+            !stderr.is_empty(),
+            "{args:?} failed without an explanation on stderr"
+        );
+    }
+
+    // Succeeding invocations: they must NOT be silent on stdout, or the rule would be satisfiable by a
+    // command that simply never reports.
+    let succeeding: &[&[&str]] = &[&["status"], &["help"], &["version"]];
+    for args in succeeding {
+        let (code, stdout, _) = cli(args);
+        assert_eq!(
+            code, 0,
+            "{args:?} must exit 0: it reports, and reporting is its job"
+        );
+        assert!(!stdout.is_empty(), "{args:?} exited 0 but said nothing");
+    }
+}
