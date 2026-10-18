@@ -62,6 +62,7 @@
 mod platform {
     use crate::device::{
         DeviceDescriptor, DeviceIdentity, DeviceReadError, IdentityComponent, RawDevice,
+        SerialSource,
     };
 
     /// How a device is attached, as far as removability is concerned.
@@ -391,13 +392,13 @@ mod platform {
     ///
     /// **The order is load-bearing**, and the fallback exists because of Probe P8: `device/serial` exists
     /// for NVMe and is **absent** for USB mass storage, where the serial lives in `device/vpd_pg80`.
-    fn read_serial(disk: &str) -> Result<String, DeviceReadError> {
+    fn read_serial(disk: &str) -> Result<(String, SerialSource), DeviceReadError> {
         // 1. Plain text (NVMe, and any class that provides it).
         let plain = format!("/sys/block/{disk}/device/serial");
         if let Ok(s) = fs::read_to_string(&plain) {
             let t = s.trim();
             if !t.is_empty() {
-                return Ok(t.to_string());
+                return Ok((t.to_string(), SerialSource::Disk));
             }
             // Readable but empty is NOT the same as absent: report unreadable rather than falling through
             // to a different mechanism that might yield a value for a different reason. (§10.1, test 6.)
@@ -406,8 +407,56 @@ mod platform {
 
         // 2. Binary VPD page 0x80 (USB mass storage). Probe P8.
         let vpd = format!("/sys/block/{disk}/device/vpd_pg80");
-        let bytes = fs::read(&vpd).map_err(|_| DeviceReadError::SerialUnreadable)?;
-        decode_vpd_pg80(&bytes)
+        if let Ok(bytes) = fs::read(&vpd) {
+            // A short or malformed page is an ERROR, not a reason to fall through: falling through would
+            // silently substitute a different component's serial for the one that exists but is broken.
+            return decode_vpd_pg80(&bytes).map(|s| (s, SerialSource::Disk));
+        }
+
+        // 3. The USB bridge's serial (AM-008). An ordinary flash drive exposes no disk serial at all, and
+        //    this is then the only identity that exists.
+        //
+        //    F3.5's W4 claimed this value came "from udev via SG_IO". It does not: it is plain sysfs at the
+        //    first ancestor of the block device that has a `serial` file. Correcting that removed the
+        //    `unsafe` FFI objection on which W4's deferral had rested.
+        //
+        //    The binding is ENCLOSURE-level and is labelled as such, so the caller can state the narrowed
+        //    guarantee rather than present it as disk-level.
+        if let Some(bridge) = usb_bridge_serial(disk) {
+            return Ok((bridge, SerialSource::Enclosure));
+        }
+
+        Err(DeviceReadError::SerialUnreadable)
+    }
+
+    /// The serial of the USB bridge the disk is attached through: the first ancestor of
+    /// `/sys/block/<disk>/device` that has a `serial` file.
+    ///
+    /// Measured on the maintainer's drives: for a SanDisk stick this equals the disk serial (the bridge
+    /// passes it through), for an HGST HDD it is a *different* number (the enclosure), and for a generic
+    /// flash drive it is the only number that exists.
+    fn usb_bridge_serial(disk: &str) -> Option<String> {
+        let link = format!("/sys/block/{disk}/device");
+        let mut cur = fs::canonicalize(&link).ok()?;
+
+        // Walk upward. Bounded by the depth of sysfs, and it stops at the root.
+        loop {
+            let candidate = cur.join("serial");
+            if let Ok(s) = fs::read_to_string(&candidate) {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+            if !cur.pop() {
+                return None;
+            }
+            // Never leave the device tree: a `serial` file in an unrelated ancestor would be nonsense, and
+            // stopping at /sys avoids walking into the rest of the filesystem.
+            if !cur.starts_with("/sys") {
+                return None;
+            }
+        }
     }
 
     /// Decode a SCSI VPD page 0x80 (Unit Serial Number).
@@ -493,8 +542,12 @@ mod platform {
 
     pub(super) fn identify(dev: &RawDevice) -> Result<DeviceIdentity, DeviceReadError> {
         let uuid = uuid_for_device(Path::new(&format!("/dev/{}", dev.partition)))?;
-        let serial = read_serial(&dev.disk)?;
-        Ok(DeviceIdentity { uuid, serial })
+        let (serial, serial_source) = read_serial(&dev.disk)?;
+        Ok(DeviceIdentity {
+            uuid,
+            serial,
+            serial_source,
+        })
     }
 
     pub(super) fn is_removable(dev: &RawDevice) -> Result<bool, DeviceReadError> {
@@ -633,6 +686,24 @@ pub enum IdentityComponent {
     HardwareSerial,
 }
 
+/// **Which component the serial binding is at** (AM-008).
+///
+/// This is part of the identity, not a diagnostic detail: it says what the guard can and cannot detect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SerialSource {
+    /// The **disk's own** serial (`device/serial` or `device/vpd_pg80`). Survives replacing the enclosure,
+    /// because the number belongs to the medium.
+    Disk,
+    /// The **USB bridge's** serial, used when the disk exposes none.
+    ///
+    /// The binding is therefore to the **enclosure**. It still detects the enclosure being unplugged, a
+    /// different enclosure substituted, and the same enclosure re-plugged elsewhere. It does **not** detect
+    /// the memory inside the enclosure being replaced — and a caller must be able to say so rather than
+    /// present this as a disk-level binding.
+    Enclosure,
+}
+
 /// The pair that identifies a device. **Not secret** — these are device properties, not key material, so
 /// `Debug`/`PartialEq` are appropriate here (unlike the main crate's secret types). G9 does not apply:
 /// this is not a secret comparison.
@@ -640,8 +711,12 @@ pub enum IdentityComponent {
 pub struct DeviceIdentity {
     /// The filesystem UUID, from the reverse traversal of `/dev/disk/by-uuid`.
     pub uuid: String,
-    /// The hardware serial, from `device/serial` or, for USB, `device/vpd_pg80`.
+    /// The hardware serial, from `device/serial`, `device/vpd_pg80`, or — when the disk exposes neither —
+    /// the USB bridge's serial.
     pub serial: String,
+    /// **Which component `serial` belongs to.** Part of the identity: a caller that prints an identity must
+    /// be able to say whether the binding is at the disk or merely at the enclosure (AM-008).
+    pub serial_source: SerialSource,
 }
 
 /// An **opaque** resolved device.

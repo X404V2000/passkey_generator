@@ -659,3 +659,99 @@ fn path_with_no_block_device_reports_no_block_device() {
         println!("/ refused (expected on an internal root)");
     }
 }
+
+/// **A drive that exposes its own serial binds at `Disk`; only one that does not binds at `Enclosure`.**
+/// AM-008.
+///
+/// The rule this test protects: **the binding level is reported, never assumed.** A drive with a disk serial
+/// must never be demoted to an enclosure binding — that would silently weaken the guarantee for equipment
+/// that can do better.
+///
+/// Measured on the maintainer's hardware when this was written:
+///
+/// | drive | exposes | binds at |
+/// |---|---|---|
+/// | SanDisk 57 GB | `vpd_pg80` | **Disk** |
+/// | HGST 465 GB | `vpd_pg80` | **Disk** (not demoted, despite having a *different* bridge serial) |
+/// | generic USB flash | nothing but the bridge serial | **Enclosure** |
+#[cfg(target_os = "linux")]
+#[test]
+fn binding_level_matches_what_the_drive_exposes() {
+    use std::path::PathBuf;
+    use tokengen_sys::device::SerialSource;
+
+    let mut checked = 0usize;
+
+    let Ok(blocks) = std::fs::read_dir("/sys/block") else {
+        assert!(!checked.eq(&0), "cannot read /sys/block on Linux");
+        return;
+    };
+
+    for entry in blocks.flatten() {
+        let disk = entry.file_name().to_string_lossy().to_string();
+        if disk.starts_with("loop") || disk.starts_with("ram") || disk.starts_with("dm-") {
+            continue;
+        }
+
+        // Does the DISK itself expose a serial? This is what decides the *required* binding level.
+        let device = entry.path().join("device");
+        let has_disk_serial = std::fs::read_to_string(device.join("serial"))
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+            || device.join("vpd_pg80").exists();
+
+        // Iterate PARTITIONS: a filesystem UUID lives on a partition, so `identify` on `/dev/sda` correctly
+        // fails with `UuidNotFound`. An earlier version of this test used whole-disk nodes, skipped every
+        // drive, and **passed while reporting "checked for 0 drive(s)"** — a test that proved nothing.
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(children) = std::fs::read_dir(entry.path()) {
+            for child in children.flatten() {
+                if child.path().join("partition").exists() {
+                    let name = child.file_name().to_string_lossy().into_owned();
+                    candidates.push(PathBuf::from(format!("/dev/{name}")));
+                }
+            }
+        }
+        if candidates.is_empty() {
+            candidates.push(PathBuf::from(format!("/dev/{disk}")));
+        }
+
+        for path in candidates {
+            if !path.exists() {
+                continue;
+            }
+            let Ok(dev) = tokengen_sys::device::resolve(&path) else {
+                continue; // refused (internal disk) — not this test's subject
+            };
+            let Ok(id) = tokengen_sys::device::identify(&dev) else {
+                continue;
+            };
+            checked += 1;
+
+            println!(
+                "{}: disk_has_serial={has_disk_serial} source={:?}",
+                path.display(),
+                id.serial_source
+            );
+
+            if has_disk_serial {
+                assert_eq!(
+                    id.serial_source,
+                    SerialSource::Disk,
+                    "{} is on {disk}, which exposes its own serial, so it must bind at Disk. Binding at \
+                     Enclosure would silently weaken the guarantee for a drive that can do better — \
+                     AM-008's precedence rule.",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    println!("binding level checked for {checked} drive(s)");
+    assert!(
+        checked > 0,
+        "ZERO drives were checked, so this test proved nothing. That is a failure, not a skip: at least one \
+         removable drive must be identifiable on a host running the real-hardware suite. (An earlier version \
+         of this test passed with zero coverage, which is exactly why this assertion exists.)"
+    );
+}

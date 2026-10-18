@@ -91,6 +91,12 @@ Stated because a limitation the user is not told about is a limitation they will
   be read, the guard refuses rather than binding to a weaker signal. On a drive that exposes no serial in
   sysfs at all, the guard will **not run at all** until that path is implemented. Failing closed is
   intended, and this narrows which drives work.
+- **On a drive that exposes no serial of its own, the guard binds to the USB enclosure instead.** Ordinary
+  USB flash drives often have no disk serial. The guard then identifies the *enclosure*: it still notices the
+  drive being unplugged, a different drive substituted, or the same drive moved to another port — but it does
+  **not** notice the memory inside the same enclosure being replaced. Which kind of binding you have is
+  reported rather than assumed. Refusing such drives entirely was the alternative, and it would have made the
+  tool unusable on a very common class of USB stick.
 - **A device soldered internally but attached over USB is treated as removable.** It is indistinguishable
   from an external drive by any signal the operating system exposes. Refusing every USB device to defend
   against that configuration would reject every external drive.
