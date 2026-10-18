@@ -219,17 +219,48 @@ fn no_host_footprint_in_watched_paths() {
         }
     }
 
-    // Changes are reported, not asserted-away: a real footprint must fail this test.
-    for c in changes.iter().take(40) {
+    // ---------------------------------------------------------------------------------------------
+    // CHANGES MADE BY THE TEST ENVIRONMENT, EXCLUDED EXPLICITLY AND BY NAME.
+    //
+    // The CI runners write their own files DURING a job. Observed on macOS:
+    //
+    //   /Users/runner/actions-runner/extracted/_diag/Worker_<timestamp>.log
+    //
+    // That is the GitHub Actions runner's diagnostic log, not the tool. The test is right to notice it —
+    // it cannot tell our writes from anyone else's, and pretending otherwise is how a footprint check
+    // becomes decorative. But it must not be silenced by widening the snapshot or by watching less; the
+    // exclusion is therefore named here, applied to the diff only, and PRINTED.
+    //
+    // A change matching any pattern below is reported as EXCLUDED rather than as a footprint. Anything
+    // else fails. Adding a pattern here is a deliberate act with a reason attached, visible in review.
+    // ---------------------------------------------------------------------------------------------
+    const ENVIRONMENT_WRITES: &[&str] = &[
+        // GitHub Actions runner diagnostics: `<runner-root>/actions-runner/**` and `_diag` logs.
+        "/actions-runner/",
+        "/_diag/",
+        // Also written by the runner's own tooling on macOS/Linux runners.
+        "/Runner.Worker",
+        "/Runner.Listener",
+    ];
+
+    let (environment, footprint): (Vec<_>, Vec<_>) = changes
+        .iter()
+        .partition(|c| ENVIRONMENT_WRITES.iter().any(|pattern| c.contains(pattern)));
+
+    for c in environment.iter().take(40) {
+        println!("  EXCLUDED (test environment, not the tool): {c}");
+    }
+    for c in footprint.iter().take(40) {
         println!("  CHANGE {c}");
     }
+
     assert!(
-        changes.is_empty(),
-        "{} change(s) appeared in the watched paths during the exercise. G11 forbids writing files on the \
-         host. If this is a change caused by the test environment rather than the tool, it must be excluded \
-         explicitly and the exclusion recorded — not silenced by widening the snapshot. See the CHANGE lines \
-         printed above.",
-        changes.len()
+        footprint.is_empty(),
+        "{} change(s) appeared in the watched paths during the exercise that are NOT on the recorded \
+         environment-exclusion list. G11 forbids writing files on the host. If a change is caused by the \
+         test environment rather than the tool, it must be added to ENVIRONMENT_WRITES with a reason — not \
+         silenced by widening the snapshot or watching less. See the CHANGE lines printed above.",
+        footprint.len()
     );
 
     println!("  no footprint observed in the watched set");
