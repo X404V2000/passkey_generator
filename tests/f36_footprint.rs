@@ -62,13 +62,31 @@ fn watched_paths() -> Vec<(PathBuf, usize, &'static str)> {
     let mut paths: Vec<(PathBuf, usize, &'static str)> = Vec::new();
 
     // Temp directories: walked fully. A footprint from a careless implementation lands here.
-    for var in ["TMPDIR"] {
+    //
+    // **Both** the Unix and the Windows variables are consulted, because neither is set everywhere:
+    // `TMPDIR` is Unix-only, `TEMP`/`TMP` are the Windows ones, and a bare `/tmp` does not exist on Windows.
+    // An earlier revision watched only `TMPDIR` plus the Unix paths, so on windows-latest **no temporary
+    // directory was watched at all** — and the detection probe had nowhere to plant its write. The test
+    // failed loudly rather than passing vacuously (line 276: "no temporary directory is watched"), which is
+    // the guard doing its job: a probe that cannot fire means "no footprint observed" proves nothing.
+    for var in ["TMPDIR", "TEMP", "TMP"] {
         if let Some(v) = std::env::var_os(var) {
             paths.push((PathBuf::from(v), FULL_DEPTH, "temporary directory"));
         }
     }
     for p in ["/tmp", "/var/tmp"] {
         paths.push((PathBuf::from(p), FULL_DEPTH, "temporary directory"));
+    }
+    // Windows' own temp root, in case no env variable is set in the test's environment.
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        paths.push((
+            PathBuf::from(profile)
+                .join("AppData")
+                .join("Local")
+                .join("Temp"),
+            FULL_DEPTH,
+            "temporary directory",
+        ));
     }
 
     // User-configuration roots: depth 1. A settings/MRU footprint is a NEW ENTRY here.
