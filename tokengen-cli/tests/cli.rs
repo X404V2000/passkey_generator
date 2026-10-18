@@ -49,6 +49,28 @@ fn cli(args: &[&str]) -> (i32, String, String) {
 // The contract that matters: a refusal must exit non-zero AND print nothing secret.
 // ---------------------------------------------------------------------------------------------
 
+/// Whichever refusal code this platform produces for "the guard will not permit a session here".
+///
+/// **This is not a relaxation — it is the platform claim made explicit.** DEFECT-007's lesson, which I
+/// repeated here by asserting exit 3 universally:
+///
+/// * on **Linux** the device backend exists, so a checkout on the internal disk is a *security* refusal —
+///   `NotOnRemovableDevice` → **3**;
+/// * on **macOS and Windows** there is **no device backend yet** (F3.7), so capture fails with
+///   `NotSupported` → **4**.
+///
+/// Both are correct, documented outcomes. Asserting only 3 encodes "every platform has a backend", which is
+/// false, and CI caught it on two of three runners.
+///
+/// What must hold on **every** platform is asserted below regardless of which code it is.
+fn expected_refusal_code() -> i32 {
+    if cfg!(target_os = "linux") {
+        3
+    } else {
+        4
+    }
+}
+
 /// **The guard refuses from a non-removable working directory, and no secret reaches stdout.**
 ///
 /// This is the user-outcome form of the library's fail-closed property. In the library it is a test
@@ -58,8 +80,10 @@ fn refusal_exits_nonzero_and_prints_no_secret() {
     let (code, stdout, stderr) = cli(&["generate", "-l", "32"]);
 
     assert_eq!(
-        code, 3,
-        "a guard refusal must exit with the SECURITY code (3), distinct from a usage error (2). Got {code}. \
+        code,
+        expected_refusal_code(),
+        "a guard refusal must exit with the platform's refusal code (3 = guard refused on Linux; \
+         4 = no backend on macOS/Windows), distinct from a usage error (2). Got {code}. \
          stdout={stdout:?} stderr={stderr:?}"
     );
     assert!(
@@ -111,12 +135,19 @@ fn usage_and_security_errors_have_distinct_exit_codes() {
     let (usage_code, _, _) = cli(&["generate", "-c", "nope"]);
     let (security_code, _, _) = cli(&["generate"]);
 
-    assert_eq!(usage_code, 2, "a usage error must exit 2");
-    assert_eq!(security_code, 3, "a guard refusal must exit 3");
-    assert!(
-        usage_code != security_code,
-        "usage and security outcomes must not share an exit code"
+    assert_eq!(usage_code, 2, "a usage error must exit 2 on every platform");
+    assert_eq!(
+        security_code,
+        expected_refusal_code(),
+        "a guard refusal must exit with the platform's refusal code"
     );
+    // The property that matters and holds everywhere: the two are DISTINGUISHABLE by a script.
+    assert_ne!(
+        usage_code, security_code,
+        "usage and security outcomes must not share an exit code, or a caller cannot tell a bad flag from \
+         a missing device"
+    );
+    assert_ne!(security_code, 0, "a refusal must never exit 0");
 }
 
 // ---------------------------------------------------------------------------------------------
