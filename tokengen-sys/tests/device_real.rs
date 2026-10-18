@@ -761,12 +761,18 @@ fn binding_level_matches_what_the_drive_exposes() {
     // The convention below is the house one — announce loudly and return — but it is only safe because the
     // discovery was exercised on a host WITH drives and produced 3. The line to watch in CI logs is
     // "binding level checked for 0", which means this test proved nothing THERE, and it says so.
+    // Expressed as `if / else` rather than an early `return;`, because the return is the last statement in
+    // the function and clippy correctly calls it unneeded. Writing it this way keeps the branch visible
+    // without suppressing a lint: suppression would hide the next, real, one.
     if checked == 0 {
         println!(
             "SKIP (no coverage): no removable drive was identifiable on this host, so the Disk-vs-Enclosure \
              binding relationship was NOT exercised. This is a skip, not a pass — on a host with drives \
              attached it checks each one."
         );
-        return;
+    } else {
+        println!(
+            "SKIP not taken: {checked} drive(s) were checked, so the assertions above applied."
+        );
     }
 }
