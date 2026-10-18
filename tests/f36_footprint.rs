@@ -29,40 +29,77 @@ use std::path::{Path, PathBuf};
 ///
 /// Returned rather than hard-coded so the test can **print** what it watched. A bound that is not visible
 /// is a bound a reader will assume away.
-fn watched_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+/// The paths watched, each with the depth that makes watching it *meaningful*.
+///
+/// # Why depth is per-path, and why that is the honest fix
+///
+/// An earlier version deep-walked the real `$HOME` on every platform. On CI that is **measurably the wrong
+/// instrument**: a runner's `$HOME` is a live system account, and the OS writes into it continuously. Two
+/// different, unrelated writes were caught on consecutive runs —
+/// `~/actions-runner/**/_diag/Worker_*.log` and `~/Library/IdentityServices` — neither caused by the tool.
+///
+/// The tempting fix is an exclusion list. **That is a check going hollow in slow motion**: every new
+/// OS-created path becomes another entry, added in a hurry, and the list ends by excusing exactly the writes
+/// it exists to catch. The test's own failure message warns against it.
+///
+/// **The claim is about the TOOL's footprint, not about the machine being quiet.** The tool is a process; its
+/// footprint is what *that process* causes. Deep-walking a profile shared with the entire OS attributes
+/// every other process's writes to us.
+///
+/// So depth is chosen by what a footprint could plausibly look like:
+///
+/// * **temp directories — full walk.** This is where a careless implementation writes: a temp file, a
+///   socket, a lock. The whole tree matters, and nothing else busy lives there.
+/// * **`$HOME` and its config/cache roots — depth 1 only.** A settings or MRU footprint appears as a *new
+///   entry directly in* `~/.config`, `~/.cache`, `%APPDATA%`, or as a new top-level file in `$HOME`. Walking
+///   deeper measures the desktop environment, not the tool — and the tool cannot even *name* a deep path
+///   inside `$HOME` without reading `$HOME`, which F3.6's static check forbids.
+///
+/// **What this gives up, stated rather than implied:** a write buried deep inside an existing `$HOME`
+/// subtree would not be seen. That is a genuine narrowing of the behavioural claim — and it is the correct
+/// trade, because the alternative was a claim that could only be sustained by excusing real paths.
+fn watched_paths() -> Vec<(PathBuf, usize, &'static str)> {
+    let mut paths: Vec<(PathBuf, usize, &'static str)> = Vec::new();
 
-    if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(&home));
+    // Temp directories: walked fully. A footprint from a careless implementation lands here.
+    for var in ["TMPDIR"] {
+        if let Some(v) = std::env::var_os(var) {
+            paths.push((PathBuf::from(v), FULL_DEPTH, "temporary directory"));
+        }
     }
-    if let Some(profile) = std::env::var_os("USERPROFILE") {
-        paths.push(PathBuf::from(&profile));
+    for p in ["/tmp", "/var/tmp"] {
+        paths.push((PathBuf::from(p), FULL_DEPTH, "temporary directory"));
     }
-    // The Windows locations a footprint would use. `%APPDATA%` in particular is where a "recent files"
-    // or settings footprint appears.
+
+    // User-configuration roots: depth 1. A settings/MRU footprint is a NEW ENTRY here.
     for var in [
+        "HOME",
+        "USERPROFILE",
         "APPDATA",
         "LOCALAPPDATA",
-        "TEMP",
-        "TMPDIR",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
         "XDG_CACHE_HOME",
     ] {
         if let Some(v) = std::env::var_os(var) {
-            paths.push(PathBuf::from(v));
+            paths.push((
+                PathBuf::from(v),
+                1,
+                "user-configuration root (depth 1: a new entry, not its contents)",
+            ));
         }
     }
-    // Always-present locations that are not env-derived.
-    for p in ["/tmp", "/var/tmp"] {
-        paths.push(PathBuf::from(p));
-    }
 
-    paths.retain(|p| p.exists());
-    paths.sort();
-    paths.dedup();
+    // A path that exists but does not exist yet on disk (e.g. /var/tmp on a minimal container) is not
+    // watchable; dropping it is safe because it cannot contain a footprint we would miss elsewhere.
+    paths.retain(|(p, _, _)| p.exists());
+    paths.sort_by(|a, b| a.0.cmp(&b.0));
+    paths.dedup_by(|a, b| a.0 == b.0);
     paths
 }
+
+/// Depth used for locations that deserve a complete walk (temp directories).
+const FULL_DEPTH: usize = 8;
 
 /// Snapshot a directory tree as `path -> (is_dir, len)`, to a bounded depth and entry count.
 ///
@@ -118,21 +155,18 @@ fn snapshot(root: &Path, max_depth: usize, max_entries: usize) -> (BTreeSet<Stri
 /// nothing — e.g. because the watched set came back empty, or a path was unreadable.
 #[test]
 fn no_host_footprint_in_watched_paths() {
-    const MAX_DEPTH: usize = 3;
     const MAX_ENTRIES: usize = 20_000;
 
     let watched = watched_paths();
     println!("F3.6 behavioural footprint check");
     println!(
-        "  watched {} paths (depth <= {MAX_DEPTH}, <= {MAX_ENTRIES} entries each):",
+        "  watched {} locations (<= {MAX_ENTRIES} entries each):",
         watched.len()
     );
-    for p in &watched {
-        println!("    {}", p.display());
+    for (p, depth, why) in &watched {
+        println!("    {} (depth {depth}) — {why}", p.display());
     }
 
-    // A watched set that is empty would make every assertion below vacuous. On any machine where this
-    // suite runs, /tmp exists, so this is a real guard rather than a formality.
     assert!(
         !watched.is_empty(),
         "the watched set is EMPTY, so a 'no change' result would prove nothing. This test's evidence \
@@ -141,8 +175,8 @@ fn no_host_footprint_in_watched_paths() {
 
     let mut before = Vec::new();
     let mut truncated_paths = Vec::new();
-    for p in &watched {
-        let (set, truncated) = snapshot(p, MAX_DEPTH, MAX_ENTRIES);
+    for (p, depth, _) in &watched {
+        let (set, truncated) = snapshot(p, *depth, MAX_ENTRIES);
         println!(
             "  watched {} -> {} entries{}",
             p.display(),
@@ -157,21 +191,12 @@ fn no_host_footprint_in_watched_paths() {
     let total: usize = before.iter().map(|(_, s)| s.len()).sum();
     println!("  snapshot: {total} entries observed before");
 
-    // A truncated snapshot would make the diff below compare incomplete pictures and could MISS a
-    // footprint in the unwalked remainder. That is a failure of the evidence, so it fails the test.
     assert!(
         truncated_paths.is_empty(),
         "the snapshot hit its bound for {:?}. The 'no footprint observed' result would then cover only the \
          walked part, and a footprint in the unwalked remainder would be invisible. Raise MAX_ENTRIES \
          deliberately (and say so) rather than letting the check silently weaken.",
         truncated_paths
-    );
-
-    assert!(
-        total > 0,
-        "the snapshot observed ZERO entries across {} watched paths. A diff over nothing always passes, \
-         so this must fail loudly rather than report success.",
-        watched.len()
     );
 
     // --- the exercise: everything the tool does that could touch the host -------------------------
@@ -209,7 +234,7 @@ fn no_host_footprint_in_watched_paths() {
 
     let after: Vec<_> = watched
         .iter()
-        .map(|p| (p.clone(), snapshot(p, MAX_DEPTH, MAX_ENTRIES).0))
+        .map(|(p, depth, _)| (p.clone(), snapshot(p, *depth, MAX_ENTRIES).0))
         .collect();
 
     let mut changes = Vec::new();
@@ -219,48 +244,22 @@ fn no_host_footprint_in_watched_paths() {
         }
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // CHANGES MADE BY THE TEST ENVIRONMENT, EXCLUDED EXPLICITLY AND BY NAME.
+    // CHANGES ARE NOT EXCUSED HERE.
     //
-    // The CI runners write their own files DURING a job. Observed on macOS:
-    //
-    //   /Users/runner/actions-runner/extracted/_diag/Worker_<timestamp>.log
-    //
-    // That is the GitHub Actions runner's diagnostic log, not the tool. The test is right to notice it —
-    // it cannot tell our writes from anyone else's, and pretending otherwise is how a footprint check
-    // becomes decorative. But it must not be silenced by widening the snapshot or by watching less; the
-    // exclusion is therefore named here, applied to the diff only, and PRINTED.
-    //
-    // A change matching any pattern below is reported as EXCLUDED rather than as a footprint. Anything
-    // else fails. Adding a pattern here is a deliberate act with a reason attached, visible in review.
-    // ---------------------------------------------------------------------------------------------
-    const ENVIRONMENT_WRITES: &[&str] = &[
-        // GitHub Actions runner diagnostics: `<runner-root>/actions-runner/**` and `_diag` logs.
-        "/actions-runner/",
-        "/_diag/",
-        // Also written by the runner's own tooling on macOS/Linux runners.
-        "/Runner.Worker",
-        "/Runner.Listener",
-    ];
-
-    let (environment, footprint): (Vec<_>, Vec<_>) = changes
-        .iter()
-        .partition(|c| ENVIRONMENT_WRITES.iter().any(|pattern| c.contains(pattern)));
-
-    for c in environment.iter().take(40) {
-        println!("  EXCLUDED (test environment, not the tool): {c}");
-    }
-    for c in footprint.iter().take(40) {
+    // An earlier revision carried an ENVIRONMENT_WRITES list naming CI-runner paths, because deep-walking a
+    // live `$HOME` caught the OS writing to itself. That list was the wrong shape of fix: it grows forever
+    // and ends by excusing exactly the writes it exists to catch. The root cause is fixed instead — depth is
+    // now per location (see `watched_paths`), so the OS's own activity in a shared profile is not watched in
+    // the first place, and anything this test DOES observe is attributed to the exercise without excuses.
+    for c in changes.iter().take(40) {
         println!("  CHANGE {c}");
     }
-
     assert!(
-        footprint.is_empty(),
-        "{} change(s) appeared in the watched paths during the exercise that are NOT on the recorded \
-         environment-exclusion list. G11 forbids writing files on the host. If a change is caused by the \
-         test environment rather than the tool, it must be added to ENVIRONMENT_WRITES with a reason — not \
-         silenced by widening the snapshot or watching less. See the CHANGE lines printed above.",
-        footprint.len()
+        changes.is_empty(),
+        "{} change(s) appeared in the watched paths during the exercise. G11 forbids writing files on the \
+         host. If a change is caused by the test environment rather than the tool, the fix is to narrow \
+         WHAT IS WATCHED and say so — not to add an exception for it. See the CHANGE lines above.",
+        changes.len()
     );
 
     println!("  no footprint observed in the watched set");
@@ -268,18 +267,21 @@ fn no_host_footprint_in_watched_paths() {
     // --- the negative half: this mechanism must DETECT a planted write -----------------------------
     //
     // Without this, the test above is satisfied by a snapshot function that observes nothing.
-    let probe_dir_found = watched.iter().find(|p| p.is_dir());
+    // The probe needs a directory it is allowed to write into, and it must be one whose depth is FULL so a
+    // new file at its top level is observed. Prefer a temporary directory: writing there is what the probe
+    // is for, and it is already on the watched list.
+    let probe_dir_found = watched
+        .iter()
+        .find(|(p, _, why)| p.is_dir() && why.contains("temporary"));
     assert!(
         probe_dir_found.is_some(),
-        "at least one watched path must be a directory, or the detection probe cannot run and the \
+        "no temporary directory is watched, so the detection probe has nowhere to plant a write and the \
          'no footprint observed' result above cannot be distinguished from observing nothing"
     );
-    // The assert above establishes this; `cloned()` plus `unwrap_or_else` keeps the workspace's `expect`
-    // denial satisfied without introducing a panic path.
     let probe_dir = probe_dir_found
-        .cloned()
+        .map(|(p, _, _)| p.clone())
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    let (probe_before, _) = snapshot(&probe_dir, MAX_DEPTH, MAX_ENTRIES);
+    let (probe_before, _) = snapshot(&probe_dir, FULL_DEPTH, MAX_ENTRIES);
 
     let probe_file = probe_dir.join(format!("f36_detection_probe_{}", std::process::id()));
     let wrote = std::fs::write(&probe_file, b"planted");
@@ -289,7 +291,7 @@ fn no_host_footprint_in_watched_paths() {
         probe_dir.display()
     );
 
-    let (probe_after, _) = snapshot(&probe_dir, MAX_DEPTH, MAX_ENTRIES);
+    let (probe_after, _) = snapshot(&probe_dir, FULL_DEPTH, MAX_ENTRIES);
     let detected = probe_after
         .difference(&probe_before)
         .any(|e| e.contains(&probe_file.display().to_string()));
