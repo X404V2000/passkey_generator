@@ -81,8 +81,46 @@ jobs:
       - name: Test tokengen-sys (release, locked)
         run: cargo test --release --locked -p tokengen-sys
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets --features test-hooks -- -D warnings
+      # F4 — the CLI's tests. These run the REAL BINARY as a subprocess (Bruce's contract is about exit
+      # codes, and exit codes live in main). Added because the same trap struck again: the CLI was BUILT
+      # above and its six tests were never run, which is DEFECT-006 repeated one day after it was recorded.
+      - name: Test tokengen-cli (release, locked)
+        run: cargo test --release --locked -p tokengen-cli
+
+      # EVERY WORKSPACE MEMBER, by name. `cargo clippy --all-targets` without `-p` lints the ROOT package
+      # only, so tokengen-sys and tokengen-cli were never linted by this step — tokengen-sys was covered
+      # incidentally by cfg_check.sh, and tokengen-cli was covered by nothing.
+      #
+      # The list is explicit rather than `--workspace` because `--workspace` interacted badly with
+      # `--features` in this repository before (DEFECT-006's note above). A guard step below asserts that
+      # this list covers every member, so adding a crate cannot silently leave it unlinted.
+      - name: Clippy (deny warnings) — every member
+        run: |
+          set -e
+          cargo clippy --all-targets --features test-hooks -p tokengen -- -D warnings
+          cargo clippy --all-targets -p tokengen-sys -- -D warnings
+          cargo clippy --all-targets -p tokengen-cli -- -D warnings
+
+      # GUARD: every workspace member must be named in this workflow. Without it, adding a crate leaves it
+      # built-but-untested and linted-by-nobody — exactly the hole that hid tokengen-sys's tests and then
+      # tokengen-cli's. This step fails loudly rather than reporting green coverage that does not exist.
+      - name: Every workspace member is built, tested and linted here
+        shell: bash
+        run: |
+          set -e
+          members=$(python3 -c "import re,sys; t=open('Cargo.toml').read(); m=re.search(r'members\s*=\s*\[(.*?)\]', t, re.S); print(' '.join(re.findall(r'\"([^\"]+)\"', m.group(1))))")
+          wf=".github/workflows/ci.yml"
+          missing=""
+          for m in $members; do
+            [ "$m" = "." ] && continue
+            if ! grep -q -- "-p $m" "$wf"; then missing="$missing $m"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::workspace member(s) not named in any -p step:$missing"
+            echo "Adding a crate without adding its build/test/clippy steps means it is silently unverified."
+            exit 1
+          fi
+          echo "every workspace member is named in this workflow: $members"
 
       - name: Format check
         run: cargo fmt --check
@@ -97,8 +135,8 @@ jobs:
         env:
           TOKENGEN_DEV_MODE_ACK: "1"
         run: |
-          cargo clippy --all-targets --features dev-mode -- -D warnings
-          cargo test --release --locked --features dev-mode
+          cargo clippy --all-targets --features dev-mode -p tokengen -- -D warnings
+          cargo test --release --locked --features dev-mode -p tokengen
 
       # F3.5 §11 requires `dev-mode` to be absent from a release build. Enforced mechanically, twice:
       #   1. here, that it is not in the `default` feature set;
