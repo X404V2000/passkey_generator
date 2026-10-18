@@ -94,7 +94,17 @@ jobs:
       # The list is explicit rather than `--workspace` because `--workspace` interacted badly with
       # `--features` in this repository before (DEFECT-006's note above). A guard step below asserts that
       # this list covers every member, so adding a crate cannot silently leave it unlinted.
+      # `shell: bash` IS REQUIRED — DEFECT-005's class, a second time.
+      #
+      # On windows-latest the default shell is PowerShell, and `set -e` is not PowerShell: it is parsed as
+      # `Set-Variable -e` and fails with "Missing an argument for parameter 'Exclude'" BEFORE any cargo
+      # command runs. The step reports failure with NO compiler output, because clippy never executed.
+      # Measured in the run log for 3e5d1e0.
+      #
+      # The repository already pinned `shell: bash` on two earlier steps for this reason. This new step did
+      # not, and reproduced the defect exactly.
       - name: Clippy (deny warnings) — every member
+        shell: bash
         run: |
           set -e
           cargo clippy --all-targets --features test-hooks -p tokengen -- -D warnings
@@ -129,6 +139,11 @@ jobs:
       # (corollary: compilation targets are coverage). It must build AND lint clean under the feature,
       # and its test must run.
       - name: dev-mode build, lint and test
+        # NO `shell: bash` HERE, deliberately, and it is safe because the body is plain `cargo` commands
+        # with no shell syntax — no `set -e`, no `if`, no `||`, no line continuation. PowerShell runs them
+        # identically. The rule that matters is not "always pin bash": it is **any step containing shell
+        # syntax must pin bash**, because windows-latest defaults to PowerShell. The clippy step above
+        # violated that rule with `set -e` and failed with no compiler output (DEFECT-005's class).
         # TOKENGEN_DEV_MODE_ACK is required by a compile-time check in src/session.rs: enabling
         # dev-mode without an explicit acknowledgement fails the build, so a release build cannot
         # acquire the guard-disabling path by accident.
