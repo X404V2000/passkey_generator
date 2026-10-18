@@ -1,0 +1,43 @@
+[package]
+name = "tokengen-cli"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.85"
+description = "TokenGen command-line interface. The FIRST BINARY in this workspace, and the only place where writing to the terminal is permitted."
+publish = false
+
+# ------------------------------------------------------------------------------------------------
+# LINT POLICY — DELIBERATELY DIFFERENT FROM THE WORKSPACE, AND NARROWLY SO
+#
+# The library crates deny `print_stdout`/`print_stderr` because a library must not decide where a user's
+# output goes. A BINARY is the opposite: writing to the terminal is its job.
+#
+# This crate therefore declares its own policy rather than inheriting the workspace's, so that:
+#   - the library's deny stays ABSOLUTE (nothing here weakens it), and
+#   - the binary's exceptions are VISIBLE IN THIS MANIFEST, where a reviewer of the security-critical
+#     library code will not trip over them.
+#
+# What is NOT relaxed: `unsafe_code` stays forbidden, and every other workspace lint stays denied. Only the
+# two printing lints are lifted, and only in this crate. See D-P13 decision 1.
+#
+# F3.6's footprint check excludes this directory by an explicit, printed, counted boundary — never a
+# blanket skip. See scripts/footprint_check.sh.
+# ------------------------------------------------------------------------------------------------
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used  = "deny"
+expect_used  = "deny"
+panic        = "deny"
+# Deliberately lifted here and ONLY here: this is the binary whose purpose is to write to the terminal.
+print_stdout = "allow"
+print_stderr = "allow"
+
+[dependencies]
+tokengen = { path = ".." }
+
+[[bin]]
+name = "tokengen"
+path = "src/main.rs"

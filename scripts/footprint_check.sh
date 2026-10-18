@@ -28,9 +28,31 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Files whose absence-of-write-APIs we assert: the SHIPPED code. Tests are excluded — a test may write to
-# a temp directory to check something else, and that is not a host footprint left by the tool.
+# Files whose absence-of-write-APIs we assert: the SHIPPED LIBRARY code.
 SHIPPED_DIRS=("src" "tokengen-sys/src")
+
+# ------------------------------------------------------------------------------------------------
+# THE BINARY EXCLUSION — DECLARED, PRINTED AND COUNTED (F4 blueprint §7, criterion 5)
+#
+# `tokengen-cli/` is DELIBERATELY NOT SCANNED, and the reason matters:
+#
+#   G11 says "zero FILES written outside the USB mount". A binary writing to the TERMINAL is not writing a
+#   file — it is what a CLI exists to do. Scanning it would produce a guaranteed FAIL on `print!`, and a
+#   gate that always fails is a gate that gets disabled.
+#
+# WHAT THIS EXCLUSION DOES COST, stated so nobody has to infer it: the binary's own behaviour is NOT covered
+# by the static check. A `std::fs::write` added to `tokengen-cli/` would NOT be caught here. That is covered
+# by F3.6's BEHAVIOURAL test instead, which runs the binary and diffs the watched paths — weaker than a
+# static guarantee, and the honest form of the claim.
+#
+# WHY IT IS WRITTEN THIS WAY: before F4, the exclusion was ACCIDENTAL — the glob simply did not reach
+# `tokengen-cli/`. An accidental exclusion is indistinguishable from a forgotten one, and that is exactly
+# where a check quietly becomes hollow. It is now declared here, PRINTED by the script, and ASSERTED below,
+# so a future directory cannot join the exclusion by being forgotten.
+EXCLUDED_DIRS=("tokengen-cli")
+# Every directory in the workspace that contains Rust source, so a NEW crate cannot slip past both the
+# scan and this declaration. If someone adds a crate, this list must be updated deliberately.
+KNOWN_CRATE_DIRS=("src" "tokengen-sys/src" "tokengen-cli/src")
 
 # The count of checks actually performed. Guards against a file being renamed out of the glob, which would
 # otherwise silently reduce this script to checking nothing.
@@ -99,7 +121,23 @@ check_absent() {
 }
 
 echo "F3.6 static footprint check — G11/G12/G13"
+echo "  scanned:  ${SHIPPED_DIRS[*]}"
+echo "  excluded: ${EXCLUDED_DIRS[*]}  (terminal writes are not file writes; see the header)"
 echo
+
+# Every known crate directory must be either scanned or explicitly excluded. A new crate that is neither
+# would be silently ignored — the accidental-exclusion failure this block exists to prevent.
+for dir in "${KNOWN_CRATE_DIRS[@]}"; do
+    known=0
+    for s_dir in "${SHIPPED_DIRS[@]}"; do [ "$s_dir" = "$dir" ] && known=1; done
+    for e_dir in "${EXCLUDED_DIRS[@]}"; do [ "$e_dir/src" = "$dir" ] && known=1; done
+    if [ "$known" -eq 0 ]; then
+        echo "FATAL: crate directory '$dir' is neither scanned nor explicitly excluded."
+        echo "       Add it to SHIPPED_DIRS (it is library code) or to EXCLUDED_DIRS with a reason in the"
+        echo "       header. An unclassified crate is an accidental exclusion."
+        exit 1
+    fi
+done
 
 # ---------------------------------------------------------------------------------------------
 # G11: no files written outside the USB mount.

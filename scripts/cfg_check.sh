@@ -44,6 +44,54 @@ cp "$REPO_ROOT/Cargo.lock" "$WORK_DIR/Cargo.lock" 2>/dev/null || true
 cp "$REPO_ROOT/tokengen-sys/Cargo.toml" "$WORK_DIR/tokengen-sys/Cargo.toml"
 cp "$REPO_ROOT"/tokengen-sys/src/*.rs "$WORK_DIR/tokengen-sys/src/"
 
+# ---------------------------------------------------------------------------------------------
+# EVERY OTHER WORKSPACE MEMBER, COPIED GENERICALLY.
+#
+# The two blocks above hard-coded the crates that existed when this script was written. When F4 added
+# `tokengen-cli` as a workspace member, the copied tree was INCOMPLETE and every cargo command failed with
+# "failed to read tokengen-cli/Cargo.toml" — the check reported FAIL for a reason that had nothing to do
+# with cfg branches.
+#
+# That is the same class as the rest of this project's recurring failures: the script encoded an assumption
+# (this workspace has two crates) that stopped being true. It now derives the member list from the
+# workspace manifest, so a new crate is copied without this script being edited.
+#
+# Only the MAIN crate's and tokengen-sys's sources are cfg-INVERTED below — that is the check's subject.
+# Other members are copied verbatim so the workspace resolves; they are compiled as-is by the cargo
+# invocations that follow.
+# ---------------------------------------------------------------------------------------------
+WORKSPACE_MEMBERS="$(python3 - "$REPO_ROOT/Cargo.toml" <<'MEMBEREOF'
+import re, sys
+text = open(sys.argv[1], encoding='utf-8').read()
+m = re.search(r'members\s*=\s*\[(.*?)\]', text, re.S)
+if not m:
+    print("")
+else:
+    print(" ".join(re.findall(r'"([^"]+)"', m.group(1))))
+MEMBEREOF
+)"
+if [ -z "$WORKSPACE_MEMBERS" ]; then
+    echo "FATAL: could not read workspace members from Cargo.toml. This check cannot verify a workspace it"
+    echo "       cannot enumerate, and guessing would check the wrong tree."
+    exit 1
+fi
+for member in $WORKSPACE_MEMBERS; do
+    case "$member" in
+        .) continue ;;                 # the root crate, already copied above
+        tokengen-sys) continue ;;      # already copied and inverted above
+    esac
+    if [ -f "$REPO_ROOT/$member/Cargo.toml" ]; then
+        mkdir -p "$WORK_DIR/$member"
+        cp "$REPO_ROOT/$member/Cargo.toml" "$WORK_DIR/$member/Cargo.toml"
+        [ -d "$REPO_ROOT/$member/src" ] && cp -r "$REPO_ROOT/$member/src" "$WORK_DIR/$member/src"
+        [ -d "$REPO_ROOT/$member/tests" ] && cp -r "$REPO_ROOT/$member/tests" "$WORK_DIR/$member/tests"
+        echo "  copied workspace member: $member"
+    else
+        echo "FATAL: workspace member '$member' has no Cargo.toml at $REPO_ROOT/$member."
+        exit 1
+    fi
+done
+
 python3 - "$WORK_DIR" <<'PY'
 import glob
 import os

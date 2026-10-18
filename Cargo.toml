@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "tokengen-sys"]
+members = [".", "tokengen-sys", "tokengen-cli"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -66,6 +66,11 @@ jobs:
       - name: Build (release, locked)
         run: cargo build --release --locked
 
+      # F4 — the CLI. Built explicitly because `cargo build --release` at the workspace root builds the
+      # ROOT package only; the same trap that meant tokengen-sys's tests never ran (DEFECT-006).
+      - name: Build CLI (release, locked)
+        run: cargo build --release --locked -p tokengen-cli
+
       # BOTH packages, explicitly. `cargo test` at the workspace root selects the ROOT package only, and
       # `--workspace` did not select `tokengen-sys` under this `--features` invocation either (measured:
       # 0 tokengen-sys test binaries). Nine tests were unreachable — the whole of device.rs's real-sysfs
