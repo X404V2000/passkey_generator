@@ -88,10 +88,30 @@ echo
 # ---------------------------------------------------------------------------------------------
 # G11: no files written outside the USB mount.
 # ---------------------------------------------------------------------------------------------
+# Matching REFERENCES, not only calls.
+#
+# The first version of this pattern required a following `(`, so it matched CALL EXPRESSIONS. That was
+# defeated by ordinary Rust that never writes the call form at the point of capability:
+#
+#     let w = std::fs::write;              // capability acquired
+#     w("/tmp/q", b"r").ok();              // used through an alias — pattern never sees `fs::write(`
+#
+#     use std::fs::write as stealth_write; // alias introduced at the use site
+#     stealth_write("/tmp/a", b"b").ok();
+#
+#     let f = std::fs::File::create;      // same shape for File::create
+#
+# Found by attacking my own checker before asking Grace to. The lesson is the same one this project keeps
+# relearning: a probe narrower than the claim it supports. The claim was "no write capability in shipped
+# code"; the probe was "no write CALL". Those are different, and the gap was exploitable with normal code.
+#
+# So the pattern now matches the NAMES wherever they appear — as a call target, as a value, or in a
+# `use ... as` alias — which is the conservative direction: an unused import is a false FAIL (visible and
+# trivial to fix), while a bypassed alias is a false PASS (invisible and dangerous).
 check_absent \
-    "G11: no file-creation or write APIs in shipped code" \
-    '\b(fs::write|fs::File::create|File::create|OpenOptions|fs::create_dir|create_dir_all|fs::remove_file|fs::remove_dir|fs::remove_dir_all|fs::rename|fs::copy|fs::set_permissions|write_all|write!)\s*\(' \
-    "G11 forbids writing files on the host. If a write is genuinely required, it needs a recorded amendment."
+    "G11: no file-creation or write capability in shipped code (calls, references, and aliases)" \
+    '(std::fs::write|fs::write|std::fs::File::create|fs::File::create|File::create|OpenOptions|std::fs::create_dir|fs::create_dir|create_dir_all|std::fs::remove_file|fs::remove_file|std::fs::remove_dir|fs::remove_dir|remove_dir_all|std::fs::rename|fs::rename|std::fs::copy|fs::copy|std::fs::set_permissions|fs::set_permissions|std::io::Write|write_all|write!|write_fmt)' \
+    "G11 forbids writing files on the host. If a write is genuinely required, it needs a recorded amendment. Note this matches REFERENCES and ALIASES too, so 'let w = std::fs::write' is caught."
 
 # ---------------------------------------------------------------------------------------------
 # G12/G13: no registry / plist / dconf / MRU integration.
@@ -106,9 +126,11 @@ check_absent \
 # G11: no RUNTIME environment reads. Compile-time `option_env!` is permitted — it is a BUILD gate that
 # cannot be set by a user of a built binary (see src/session.rs's dev-mode acknowledgement).
 # ---------------------------------------------------------------------------------------------
+# Same correction as the write check: match the NAME, not the call, so an alias cannot slip past. The
+# compile-time `option_env!` remains permitted — it is a BUILD gate a user of a built binary cannot set.
 check_absent \
-    "G11: no runtime environment reads in shipped code" \
-    '\b(env::var|env::vars|env::var_os|std::env::var|std::env::vars)\s*[(<]' \
+    "G11: no runtime environment access in shipped code (calls, references, and aliases)" \
+    '(std::env::var|env::var|env::vars|env::var_os|env::var_os|std::env::args|env::args)' \
     "A runtime env read is how a program discovers \$HOME / %APPDATA% / a config dir — i.e. how a host footprint starts. The compile-time option_env! is permitted."
 
 # ---------------------------------------------------------------------------------------------
