@@ -49,26 +49,28 @@ fn cli(args: &[&str]) -> (i32, String, String) {
 // The contract that matters: a refusal must exit non-zero AND print nothing secret.
 // ---------------------------------------------------------------------------------------------
 
-/// Whichever refusal code this platform produces for "the guard will not permit a session here".
+/// The exit codes that legitimately mean "the guard will not permit a session here".
 ///
-/// **This is not a relaxation — it is the platform claim made explicit.** DEFECT-007's lesson, which I
-/// repeated here by asserting exit 3 universally:
+/// **This is not a relaxation — it is the claim made honest.** It took two corrections to get here, and the
+/// second one was exposed by the FREEZE PROCEDURE, not by CI:
 ///
-/// * on **Linux** the device backend exists, so a checkout on the internal disk is a *security* refusal —
-///   `NotOnRemovableDevice` → **3**;
-/// * on **macOS and Windows** there is **no device backend yet** (F3.7), so capture fails with
-///   `NotSupported` → **4**.
+/// 1. **DEFECT-007 (platform).** The first version asserted exit 3 everywhere. On macOS and Windows there is
+///    no device backend (F3.7), so capture fails with `NotSupported` → **4**. Asserting only 3 encoded
+///    "every platform has a backend", which is false.
+/// 2. **This correction (filesystem).** The second version asserted 3 on Linux. But AM-007 added a second
+///    legitimate Linux outcome: a working directory with **no block device at all** (tmpfs, overlay, network
+///    mount) is `NoBlockDevice` → **4**, because there is no device to have been swapped. So on Linux the code
+///    depends on **which filesystem the checkout sits on**:
+///    - a real disk that is fixed → `NotOnRemovableDevice` → **3**
+///    - a tmpfs / overlay → `NoBlockDevice` → **4**
 ///
-/// Both are correct, documented outcomes. Asserting only 3 encodes "every platform has a backend", which is
-/// false, and CI caught it on two of three runners.
+///    CI checks out onto a real disk and saw 3. The anchored freeze run extracts to `/tmp` — a tmpfs — and
+///    saw 4. **Both are correct; the test was asserting WHERE IT RAN.**
 ///
-/// What must hold on **every** platform is asserted below regardless of which code it is.
-fn expected_refusal_code() -> i32 {
-    if cfg!(target_os = "linux") {
-        3
-    } else {
-        4
-    }
+/// **The invariant that holds everywhere** is asserted below and is the one that carries the weight: the
+/// exit is non-zero, distinguishable from a usage error (2), and stdout is empty.
+fn is_guard_refusal(code: i32) -> bool {
+    code == 3 || code == 4
 }
 
 /// **The guard refuses from a non-removable working directory, and no secret reaches stdout.**
@@ -79,12 +81,11 @@ fn expected_refusal_code() -> i32 {
 fn refusal_exits_nonzero_and_prints_no_secret() {
     let (code, stdout, stderr) = cli(&["generate", "-l", "32"]);
 
-    assert_eq!(
-        code,
-        expected_refusal_code(),
-        "a guard refusal must exit with the platform's refusal code (3 = guard refused on Linux; \
-         4 = no backend on macOS/Windows), distinct from a usage error (2). Got {code}. \
-         stdout={stdout:?} stderr={stderr:?}"
+    assert!(
+        is_guard_refusal(code),
+        "a guard refusal must exit 3 (a real device that is not removable) or 4 (no device backend, or no \
+         block device at all). Got {code}. It must never share a code with a usage error (2), and must never \
+         be 0 or 1. stdout={stdout:?} stderr={stderr:?}"
     );
     assert!(
         stdout.is_empty(),
@@ -136,10 +137,9 @@ fn usage_and_security_errors_have_distinct_exit_codes() {
     let (security_code, _, _) = cli(&["generate"]);
 
     assert_eq!(usage_code, 2, "a usage error must exit 2 on every platform");
-    assert_eq!(
-        security_code,
-        expected_refusal_code(),
-        "a guard refusal must exit with the platform's refusal code"
+    assert!(
+        is_guard_refusal(security_code),
+        "a guard refusal must exit 3 or 4 depending on the platform AND the filesystem; got {security_code}"
     );
     // The property that matters and holds everywhere: the two are DISTINGUISHABLE by a script.
     assert_ne!(
