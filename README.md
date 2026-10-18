@@ -101,6 +101,10 @@ Stated because a limitation the user is not told about is a limitation they will
   a **fixed** transport (NVMe, ATA, SATA) is accepted if the kernel reports the media as removable, which is
   the correct behaviour for a card reader or a media slot. So the rule is not "the flag never matters" — it
   matters for fixed transports, by design.
+- **The working directory must be on a real block device.** A directory on a `tmpfs`, an overlay filesystem
+  (common inside containers), or a network mount has **no device behind it**, so the guard cannot bind and the
+  tool exits with code 4. This is reported as *"not on a block device at all"* rather than as a missing
+  device, because the remedies differ — replugging a drive will never fix a `tmpfs` path.
 - **The guard verifies the device, not the filesystem.** It confirms the same device is still present and
   has the same identity. It does not check that the filesystem on it is intact, uncorrupted, or unmodified.
 - **An attacker who images the medium wins.** The guard binds to a device's identity — its serial and

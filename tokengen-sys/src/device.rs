@@ -199,7 +199,13 @@ mod platform {
 
         // Neither resolved. Failing closed is correct: we cannot say which device this path is on, and
         // guessing would bind identity to the wrong thing.
-        Err(DeviceReadError::DeviceNotFound)
+        //
+        // **`NoBlockDevice`, not `DeviceNotFound`** (AM-007). Neither `st_dev` nor `st_rdev` names a block
+        // device that exists in sysfs, which is the signature of a path with NO backing device — tmpfs,
+        // overlayfs, a network mount. Reporting `DeviceNotFound` said "the device you named does not exist",
+        // a specific and false cause; the user would look for a typo or a loose cable, neither of which is
+        // the problem. Found by Grace on a `/tmp` working directory.
+        Err(DeviceReadError::NoBlockDevice)
     }
 
     /// Resolve a `(major, minor)` pair to its kernel block-device name, e.g. `sda1`.
@@ -575,7 +581,17 @@ pub enum DeviceReadError {
     StatFailed,
     /// The path is not a valid C string (contains an interior NUL).
     InvalidPath,
-    /// `st_dev` did not resolve to a block device under `/sys/dev/block`.
+    /// `st_dev` did not resolve to a block device under `/sys/dev/block`, **because the path is not on a
+    /// block device at all** — a tmpfs, overlayfs, network mount or FUSE path.
+    ///
+    /// **Distinct from [`DeviceNotFound`](Self::DeviceNotFound)** (AM-007): that says a device was expected
+    /// and could not be found; this says no device can be identified here, so the guard cannot bind. Both are
+    /// refusals, and the **remedies differ** — replugging a drive fixes the first and never the second.
+    ///
+    /// Reachable in ordinary deployments: a container's working directory is very often an overlay.
+    NoBlockDevice,
+    /// A device was expected but its sysfs link is dangling or unreadable — a genuine lookup failure rather
+    /// than a path that was never on a device.
     DeviceNotFound,
     /// A sysfs property could not be read, or was malformed/truncated.
     /// The **filesystem UUID** could not be read.

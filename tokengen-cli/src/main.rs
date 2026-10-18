@@ -101,7 +101,8 @@ EXIT CODES:
     0  success
     2  usage error (bad command, bad flag, bad length, unknown charset)
     3  SECURITY: the session guard refused (device missing, swapped, or unverifiable)
-    4  this platform cannot provide a required capability
+    4  this location or platform cannot be used: no device backend (macOS/Windows), or the
+       working directory is not on a block device at all (tmpfs, overlay, network mount)
     5  the entropy source or generator failed
 
 ABOUT THE GUARD:
@@ -347,6 +348,16 @@ fn run(args: &[String]) -> ExitCode {
                     exit::GUARD_REFUSED,
                     "the working directory is not on a removable device. The session guard binds to the \
                      drive, so the tool refuses to run from the internal disk."
+                        .to_string(),
+                ),
+                // AM-007: NOT a security refusal. There is no device here to have been swapped, so this is
+                // a capability outcome (exit 4), and the message must not suggest a missing drive — the user
+                // would look for a loose cable that does not exist.
+                tokengen::session::SessionError::NoBlockDevice => (
+                    exit::UNSUPPORTED,
+                    "the working directory is not on a block device at all (tmpfs, an overlay filesystem, \
+                     or a network mount). No device identity can be read here, so the guard cannot bind. \
+                     Run the tool from a directory on a real removable device."
                         .to_string(),
                 ),
                 other => (

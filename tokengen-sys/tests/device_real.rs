@@ -615,3 +615,47 @@ fn identity_failure_names_the_component_that_failed() {
          (false is acceptable here; the mapping assertions above are the contract)"
     );
 }
+
+/// **A path with no backing block device is reported as such, not as a missing device** — AM-007.
+///
+/// The gap that hid this: every real-sysfs test used a path **on a block device** (`/`, or a partition on a
+/// removable drive). None used a path that is on **no** block device — a tmpfs, an overlay, a network mount.
+/// So `resolve("/tmp")` returned `DeviceNotFound` — *"the device you named does not exist"* — for a path that
+/// simply has no device behind it, and every test passed.
+///
+/// Found by Grace while verifying F4, on a `/tmp` working directory: the CLI said `DeviceNotFound`, sending
+/// the user to look for a loose cable that does not exist. Reachable in any container, where the working
+/// directory is commonly an overlay.
+#[cfg(target_os = "linux")]
+#[test]
+fn path_with_no_block_device_reports_no_block_device() {
+    // `/proc` is a procfs: it exists on every Linux system and cannot be backed by a block device.
+    let path = std::path::Path::new("/proc");
+
+    match tokengen_sys::device::resolve(path) {
+        Err(tokengen_sys::device::DeviceReadError::NoBlockDevice) => {
+            println!("/proc: NoBlockDevice — correct");
+        }
+        Err(other) => assert!(
+            !matches!(other, tokengen_sys::device::DeviceReadError::DeviceNotFound),
+            "/proc has no block device behind it, so reporting DeviceNotFound ('the device you named does \
+             not exist') is a false cause. Got {other:?}. See AM-007."
+        ),
+        Ok(_) => unreachable!(
+            "/proc resolved to a device. A procfs cannot have one; if this ever fires, the resolution found \
+             a block device by accident and would bind identity to the wrong thing."
+        ),
+    }
+
+    // And the distinction must survive: a real block device that is FIXED must still be NotRemovable, not
+    // lumped into NoBlockDevice. If everything became NoBlockDevice, the first assertion above would pass
+    // while the diagnosis got worse.
+    if let Ok(dev) = tokengen_sys::device::resolve(std::path::Path::new("/")) {
+        println!(
+            "/ resolved but should be refused if non-removable: {:?}",
+            tokengen_sys::device::is_removable(&dev)
+        );
+    } else {
+        println!("/ refused (expected on an internal root)");
+    }
+}

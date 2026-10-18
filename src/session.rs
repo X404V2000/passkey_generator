@@ -144,6 +144,13 @@ pub enum SessionError {
     NotOnRemovableDevice,
     /// The path could not be resolved to a backing device.
     DeviceNotFound,
+    /// The path is **not on a block device at all** — a tmpfs, overlayfs, network mount or FUSE path
+    /// (AM-007).
+    ///
+    /// Distinct from [`DeviceNotFound`](Self::DeviceNotFound) on purpose. Reporting the second for a tmpfs
+    /// path told the user a device was missing when none could exist there, sending them to a remedy
+    /// (replug, recheck the path) that cannot work. Found by Grace on a `/tmp` working directory.
+    NoBlockDevice,
     /// A required identity component could not be read. The component is named so the caller learns
     /// *what* was unverifiable without inventing a value for it.
     IdentityUnreadable {
@@ -268,6 +275,8 @@ fn map_error(err: tokengen_sys::device::DeviceReadError) -> SessionError {
         // because none did; reporting it as `IdentityUnreadable` would name a component that was read
         // successfully. `DeviceNotFound` is the honest mapping here — the device could not be
         // characterised — and it fails closed.
+        // AM-007: a path with no backing block device is its own outcome, not a missing device.
+        E::NoBlockDevice => SessionError::NoBlockDevice,
         E::RemovabilityUnreadable => SessionError::DeviceNotFound,
         E::NotSupported => SessionError::NotSupported,
         // `DeviceReadError` is `#[non_exhaustive]`, so a future variant must not break this crate.
