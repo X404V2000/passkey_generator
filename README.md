@@ -27,7 +27,15 @@ A cryptographically secure, stateless passkey and secret key generator engineere
 
 2. **Zero Modulo Bias (Rejection Sampling)**:
    - Naive modulus operations (`rand_byte % len(charset)`) skew character probabilities when 256 is not evenly divisible by the charset length.
-   - This implementation computes rejection thresholds $\text{limit} = 256 - (256 \pmod{|\text{charset}|})$ and discards out-of-range entropy bytes, mathematically ensuring uniform probability distribution ($\frac{1}{|\text{charset}|}$) across all characters.
+   - This implementation computes a rejection threshold and discards out-of-range entropy bytes, mathematically ensuring a uniform probability distribution of exactly `1 / len(charset)` across all characters:
+
+     ```text
+     limit = 256 - (256 mod len(charset))
+
+     keep a byte b only if:  b < limit
+     ```
+
+     Bytes at or above `limit` are discarded and re-drawn, so no character is ever more likely than another.
 
 3. **Stateless & Zero Caching**:
    - Completely stateless: does **not** store, cache, memoize, or log any generated key.
@@ -132,7 +140,8 @@ Stated because a limitation the user is not told about is a limitation they will
 this project's own invariants. See [`legacy/python/README.md`](legacy/python/README.md) and `SECURITY.md`.
 
 **This is deliberate.** Installing **no** command is honest; installing the **wrong** one is not. The Rust
-CLI is feature **F4**, and it does not exist yet.
+CLI is feature **F4**, which is frozen — see [What is actually implemented](#what-is-actually-implemented)
+for its exact state and the caveats that come with it.
 
 | I want to… | Where to go |
 |---|---|
@@ -168,14 +177,38 @@ platform note in [What This Tool Cannot Do](#the-usb-session-guard-f35).
 | **F2** — charset / rejection sampling | **Frozen.** Zero modulo bias. |
 | **F3** — zeroization, memory locking, core-dump suppression | **Frozen.** Linux only. |
 | **F3.5** — USB session guard | **Frozen** at `3c9dcbc`. Linux only. |
-| **F4** — CLI | **Not started.** Until it exists there is no user-facing tool. |
+| **F4** — CLI | **Frozen** at `8ec7cdb`, verified against that commit — see the caveat below. |
 | F5–F10 | Not started. See the roadmap. |
+
+### F4: frozen, and stale
+
+F4's completion report ([`plan/reports/F4/F4_Completion_Report.md`](plan/reports/F4/F4_Completion_Report.md))
+verifies the CLI at `8ec7cdb`: 10/10 gates, run from an extracted copy in a tmpfs, 7 tests passing, exit
+codes re-measured live.
+
+That record is accurate **for `8ec7cdb`** — which **is an ancestor of HEAD**. It is no longer accurate for
+**HEAD**. Twelve commits have landed underneath it, two of which touch exactly what F4 matches on:
+
+| Change | Effect on F4 |
+|---|---|
+| **AM-007** | added `SessionError::NoBlockDevice` — **a new CLI match arm exists post-freeze** |
+| **AM-008** | added `SerialSource` — **not surfaced by the CLI** |
+
+**Frozen and intact:** the interface, the exit codes, and the no-secret-on-failure rule.
+
+**What the freeze now hides:** `tokengen status` does not report which binding level the session has.
+AM-008 made `SerialSource` part of the session identity precisely so a caller could distinguish an
+**enclosure-level** binding — but the CLI discards that information at the boundary. On a stick whose
+binding is enclosure-level, a user gets no warning. The value exists upstream; it is never printed.
+
+That gap is not a regression; it was never implemented. It is recorded here rather than left for a
+reader to discover.
 
 ## A note on the legacy Python
 
 `legacy/python/` holds the original Python prototype. It is **unmaintained, not installed, and not part of
 the trust path**, and its own README explains why it cannot satisfy G3 (fail-closed). It is kept only because
-it is the sole end-to-end WebAuthn/CBOR reference in the repository, which **F4** will want when that
-behaviour is rebuilt in Rust.
+it is the sole end-to-end WebAuthn/CBOR reference in the repository. **F4** does not use it, and nothing
+should; it is kept as historical reference only.
 
 **Do not use it. Do not rely on its tests** — they are not run by any CI job.

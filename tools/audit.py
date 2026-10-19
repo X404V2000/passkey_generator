@@ -63,7 +63,6 @@ ATTENTION_RE = re.compile(
 def doc_paths():
     pats = [
         "plan/reports/**/*.md",
-        "plan/conversation/*.md",
         "plan/mailroom/threads/*.md",
         "plan/PROJECT_PLAN.md",
     ]
@@ -133,13 +132,7 @@ def main():
     hits = 0
     # Only *live* documents: settled history is not "needs attention". A debugging view that flags the
     # entire history is noise, and a noisy check is one people learn to ignore.
-    live = []
     for p in docs:
-        rel = os.path.relpath(p, ROOT)
-        if rel.startswith("plan/conversation/"):
-            continue  # historical, read-only — settled
-        live.append(p)
-    for p in live:
         rel = os.path.relpath(p, ROOT)
         if term and term not in rel.lower() and term not in open(p, encoding="utf-8", errors="replace").read().lower():
             continue

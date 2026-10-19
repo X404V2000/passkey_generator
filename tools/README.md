@@ -60,7 +60,7 @@ tool show only what is verifiable.
 
 - The tools show **what the repository says**, not what is true about the world. A claim recorded as verified
   is displayed as *recorded*, not re-verified — only a real run does that.
-- The conversation view reads `plan/mailroom/threads/` (current) and `plan/conversation/` (history). It does
+- The conversation view reads `plan/mailroom/threads/`. It does
   not include chat outside the repository.
 - The audit view extracts claims from tables that follow the project's protocol; a claim written as loose
   prose may not be captured. Structured records are the point.

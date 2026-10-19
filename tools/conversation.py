@@ -6,7 +6,6 @@ WHAT IT SHOWS
 -------------
 Every message exchanged between employees and the Founder, drawn from:
   - plan/mailroom/threads/*.md      (current, org-era conversations)
-  - plan/conversation/*.md          (historical, pre-org exchange — read-only history)
 
 WHY GENERATED
 -------------
@@ -52,7 +51,7 @@ MARKERS = [
 
 def md_paths():
     out = []
-    for pat in ("plan/mailroom/threads/*.md", "plan/conversation/*.md"):
+    for pat in ("plan/mailroom/threads/*.md",):
         out += sorted(glob.glob(os.path.join(ROOT, pat)))
     return out
 
@@ -116,8 +115,6 @@ def main():
     threads = []
     for p in files:
         rel = os.path.relpath(p, ROOT)
-        if rel.endswith("plan/conversation/README.md"):
-            continue  # protocol doc, not a conversation
         threads.append((rel, title_of(p), status_of(p), messages_in(p)))
 
     # apply filters

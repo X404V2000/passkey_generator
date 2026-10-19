@@ -3,7 +3,7 @@
 **Host:** `Linux 6.12.107+deb13-amd64 x86_64` (Debian, NVMe root)
 **Date:** 2026-10-02
 **Purpose:** the artifacts required by the "Probes and Evidence" section, per
-`plan/conversation/system_design_and_achitectural_engineer_11.md` §6 and §8.
+the F3.5 design directive §6 and §8.
 
 Every claim the F3.5 blueprint makes about platform mechanics must be backed by one of: **a probe
 committed here**, **a citation**, or an explicit **stated limitation**. An unlabelled assertion is not

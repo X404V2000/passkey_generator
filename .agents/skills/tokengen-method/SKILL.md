@@ -31,7 +31,7 @@ summary of them, including a summary in a conversation message.
 | `plan/reports/README.md` | **The enforcement clauses, corollaries, the recorded-failures table, the gate-run standard, and the report status vocabulary** | Before writing any claim, report, or gate result |
 | `plan/ROADMAP.md` | Which features are frozen, in flight, or recorded; their anchor SHAs | Before starting or resuming work |
 | `docs/LANGUAGE_DECISION.md` | Why Rust; why Python is out of the trust path; the disclosure and `SECURITY.md` obligations | Before touching language, packaging, or distribution |
-| `plan/conversation/` | The full decision history and the two-role exchange protocol | Before responding to a review or a design question |
+| `plan/mailroom/threads/` | The decision record and review exchanges | Before responding to a review or a design question |
 | `plan/reports/F<id>/` | The feature's blueprint, amendments, and completion report | Before working on that feature |
 | `probes/`, `scripts/cfg_check.sh` | The mechanical enforcement: platform probes and cfg-branch compilation | Before making a platform claim or running gates |
 
@@ -129,7 +129,7 @@ Known findings already established (do not re-derive, do extend):
 
 ## 6. The two-role protocol
 
-Work alternates between two roles, recorded as numbered files in `plan/conversation/`:
+Work alternates between roles, recorded as numbered thread files in `plan/mailroom/threads/`:
 
 - **System Design & Architectural Engineer** (architect): owns architecture, blueprints, the invariant
   framework, review, and enforcement. Writes `system_design_and_achitectural_engineer*.md`.

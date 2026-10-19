@@ -57,7 +57,7 @@ Read, in order (and only these — see §5 on cost):
 
 The Founder pays for this. So:
 
-1. **Read the thread, not the archive.** One thread file, not `plan/conversation/` (history, read-only) and not
+1. **Read the thread, not the archive.** One thread file, not the whole mailroom archive and not
    the whole repo.
 2. **Act only on what is addressed to you.**
 3. **Cite, don't re-derive.** Recorded probes, decisions and failures are in the repo — reference by path.
