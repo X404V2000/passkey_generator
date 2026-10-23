@@ -38,9 +38,9 @@ If you believe a vulnerability is being exploited, say so in your report and it 
 
 ## Supported versions
 
-**There is no supported release yet.** Version 1.0 has not shipped, and the release gate
-(`plan/PROJECT_PLAN.md` §8) is still open. The repository is public so the work can be reviewed, not because
-there is a usable product.
+**There is no supported release yet.** Version 1.0 has not shipped, and its release gate — every feature
+frozen, signed and checksummed build artefacts, cross-platform CI green — is still open. The repository is
+public so the work can be reviewed, not because there is a usable product.
 
 Until a release exists, **the only supported version is the current `main`** — a report against any other
 commit will be assessed against `main`.
