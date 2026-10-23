@@ -67,10 +67,23 @@ arms. Both are recorded rather than silently folded in:
 
 ## 5. What F4 does NOT establish
 
-1. **The success path is unverified.** Generation from a removable device needs hardware; CI and this host
-   had none attached during the run. The test is **announced as skipped**, never silently passed.
-2. **The binding-level line is untested end to end.** `status` prints it only on a removable device, so the
-   three unit tests cover the wording and the *call site* is unexercised.
+1. ~~**The success path is unverified.**~~ **CLOSED 2026-10-23, on real hardware.** Two USB drives were
+   mounted and the frozen binary was run from each:
+
+   ```
+   /media/…/500GB  (sda1)  binding level: DISK       generate -> exit 0, 32 chars
+   /media/…/125GB  (sdb1)  binding level: ENCLOSURE  generate -> exit 0, 32 chars
+   ```
+
+   **Both guarantees reproduced on real hardware**, on two drives bound at different levels. The two
+   generated secrets differed, as they must. **Neither drive gained a single file** — G11 holds: the tool
+   reads its working directory for identity and writes only to stdout.
+2. ~~**The binding-level line is untested end to end.**~~ **CLOSED** by the same run: `status` printed the
+   correct level on each drive, including the enclosure warning on the drive that needs it.
+3. **A genuine SWAP is still untested on hardware.** Unmounting removes the mountpoint, so the OS preempts
+   the guard on that path; the substitution case (same directory, different device) is covered by
+   `session_guard::identity_mismatch_on_swap` against mock devices, not by mounting a drive in that
+   directory — which needs root.
 3. **There is no passphrase prompt.** Deferred by D-P13: F3.5's contract requires polling *"even while
    blocked on input"*, `stdin` reads block, and a single-threaded CLI cannot meet it. F4 takes flags only.
 4. **The dev-mode path was exercised on Linux only.**
