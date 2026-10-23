@@ -1,214 +1,241 @@
-# TokenGen (`passkey-gen`)
+# TokenGen
 
-> ## ⚠️ Project status — read before installing
->
-> TokenGen's supported implementation is **Rust**. The legacy Python has been **removed from the trust
-> path** (F3.9): it is no longer installed by any packaging path, and it lives under `legacy/python/` with a
-> README explaining why it cannot satisfy this project's invariants.
->
-> | | Rust (`src/`, `tokengen-sys/`) | Python (`legacy/python/` — **reference only, not runnable**) |
-> |---|---|---|
-> | Status | **Supported.** F1, F2, F3 and F3.5 are frozen. | **Legacy — do not use for real secrets.** Not installed by any packaging path. |
-> | Zeroization | Enforced by the type system (`Zeroizing<T>`) | `SecurePasskey` only; **not** `WebAuthnPasskey` |
-> | Constant-time comparisons | `subtle` types | Not available |
-> | Memory locking (`mlock`) | Sound (stable buffer address) | Best-effort; GC may move data |
->
-> **The Python implementation does not satisfy this project's own security invariants and must not be relied on.** Its runtime was deleted (AM-009); what remains under `legacy/python/` is a non-runnable reference for the WebAuthn/CBOR encoding. See [`docs/LEGACY_PYTHON_REMOVED.md`](docs/LEGACY_PYTHON_REMOVED.md). Specifically, `WebAuthnPasskey.destroy()` drops a reference without wiping memory, and `export_private_key_pem()` returns an unwipeable `str` containing the private key. See [`docs/LANGUAGE_DECISION.md`](docs/LANGUAGE_DECISION.md) §4 for the verified findings.
->
-> Security guarantees in the sections below describe the **Rust** implementation unless explicitly stated otherwise.
+**A passkey and secret vault for a USB drive — offline, fail-closed, and honest about what it does not yet do.**
 
-A cryptographically secure, stateless passkey and secret key generator engineered with a **defense-in-depth** security architecture.
-
-## Core Security Guarantees
-
-1. **Kernel OS CSPRNG Entropy Source**:
-   - Uses `os.urandom()` backed by the Linux kernel entropy pool (`getrandom(2)` / `/dev/urandom`).
-   - Prevents PRNG state compromise, predictable seeding, and algorithmic sequence recovery.
-
-2. **Zero Modulo Bias (Rejection Sampling)**:
-   - Naive modulus operations (`rand_byte % len(charset)`) skew character probabilities when 256 is not evenly divisible by the charset length.
-   - This implementation computes a rejection threshold and discards out-of-range entropy bytes, mathematically ensuring a uniform probability distribution of exactly `1 / len(charset)` across all characters:
-
-     ```text
-     limit = 256 - (256 mod len(charset))
-
-     keep a byte b only if:  b < limit
-     ```
-
-     Bytes at or above `limit` are discarded and re-drawn, so no character is ever more likely than another.
-
-3. **Stateless & Zero Caching**:
-   - Completely stateless: does **not** store, cache, memoize, or log any generated key.
-   - The generator holds no internal history of previously generated keys.
-
-4. **Volatile Memory Sanitization & Destruction**:
-   - Standard Python strings (`str`) are immutable and reside in PyMalloc heap arenas until reclaimed by garbage collection.
-   - The legacy Python encapsulated secrets inside `SecurePasskey`, backed by native C buffers (`ctypes`). **That runtime has been deleted** (AM-009) — only its WebAuthn/CBOR encoding survives, as a non-runnable reference.
-   - On context exit or `.destroy()`, memory is actively wiped using OS-level `explicit_bzero` / `memset` and zeroized byte-by-byte.
-     - **Scope of this guarantee (Python):** it applies to `SecurePasskey` only. It does **not** apply to `WebAuthnPasskey`, whose `destroy()` sets `self._private_key = None` without wiping, and which never calls `zeroize_buffer` or `mlock`.
-   - Implements memory locking (`mlock`) to pin secret buffers in physical RAM and prevent paging to unencrypted swap disks.
-   - Redacts string representations (`repr` / `str`) to prevent accidental leakage in debug logs or exception tracebacks.
-
-5. **Linux Kernel Process Hardening (Anti-Snooping & Anti-Dump)**:
-   - Sets `RLIMIT_CORE = 0` to permanently block core dump creation upon abnormal termination or crash.
-   - Enforces `prctl(PR_SET_DUMPABLE, 0)`:
-     - Disallows other processes running under the same UID from reading `/proc/<pid>/mem`.
-     - Blocks `ptrace(PTRACE_ATTACH)` debugger attachments and memory inspection.
-     - Changes `/proc/<pid>/` ownership to `root:root`.
-   - Enforces `prctl(PR_SET_NO_NEW_PRIVS, 1)` to prevent child executions from acquiring elevated permissions.
+TokenGen generates, stores, manages, protects, and displays secrets and passkeys entirely from a removable
+drive. It never contacts a network. It refuses to run rather than run weakened. And it states, on this page,
+exactly which parts of that sentence are true today.
 
 ---
 
-## What This Tool Cannot Do
+## ⚠️ Read this before anything else
+
+**TokenGen is not finished.** It is published early so the security work is auditable from the beginning.
+
+| Capability | State |
+|---|---|
+| **Generate** secrets from kernel entropy | **WORKS.** Frozen, hardware-verified. |
+| **Protect** secrets in memory (zeroization, locking, no core dumps) | **WORKS** on Linux. Frozen. |
+| **Bind** a session to a specific USB drive | **WORKS** on Linux. Frozen. |
+| **Store** secrets on the drive | **NOT BUILT.** Nothing is persisted. |
+| **Manage** them (list, rename, delete, rotate) | **NOT BUILT.** |
+| **Display** them safely (no scrollback, clipboard auto-clear) | **NOT BUILT.** The tool prints to stdout. |
+| Back up / restore | **NOT BUILT.** |
+| Windows and macOS | **NOT BUILT.** Both refuse, deliberately. |
+
+**What that means in practice today:** if you run TokenGen, it will produce a secret and print it. **It will
+not save it anywhere.** If you want to keep it, you must copy it into a password manager yourself — and the
+tool will warn you that it is now in your terminal scrollback.
+
+**We are telling you this because the alternative is worse.** A tool that generated a "passkey" and gave you
+nowhere to put it, while looking finished, would cause exactly the loss it exists to prevent. The storage
+layer is the next major piece of work, and it is designed around not losing your data (see
+[Roadmap](#roadmap)).
+
+---
+
+## What TokenGen is for
+
+Every password manager asks you to trust a browser extension, a cloud sync, or both. TokenGen's position is
+that **the secret never leaves hardware you hold, and the machine it runs on never learns it.**
+
+When finished it will be:
+
+- **Generates** — secrets from the operating system's CSPRNG, with no user-space PRNG state and no modulo
+  bias, at lengths you choose from a defined character set.
+- **Stores** — an encrypted vault on the USB drive, bound to that drive's identity, so a copy of the file
+  alone opens nothing.
+- **Manages** — named entries, listing, rotation, deletion, with every mutation auditable.
+- **Protects** — memory is locked and wiped on drop, compiled in rather than remembered; core dumps are
+  suppressed; secrets are never written to the host disk or to logs.
+- **Displays** — on request, briefly, never into scrollback by default, never auto-filled into a page.
+
+**And deliberately does not:** contact any network, sync to any service, integrate with a browser extension,
+or store anything on the host machine.
+
+---
+
+## Design commitments
+
+These are not aspirations. Each is enforced by the test suite, and several are enforced by the compiler.
+
+**1. Fail closed, always.**
+Every failure path refuses. A guard that cannot verify something says so and stops. There is no
+"degrade gracefully" branch in any security-critical path — that pattern is precisely how a tool reports
+success while protecting nothing.
+
+**2. Secrets are wiped by construction, not by discipline.**
+`Secret<T>` zeroizes on drop and cannot be cloned or formatted. `#![forbid(unsafe_code)]` on the main crate
+means a mistake is a compile error. The `unsafe` that memory locking requires is confined to one sub-crate
+behind a safe API, in enumerated modules whose count is checked by a script.
+
+**3. The device binding is real, and its limits are stated.**
+A session is bound to the identity of the drive the working directory lives on — filesystem UUID plus the
+drive's own serial. Pulling the drive, or substituting another, is detected.
+
+Some drives expose no serial of their own. For those the guard binds to the **USB enclosure** instead, and
+**says so** — because an enclosure binding does not detect someone replacing the memory inside the same
+enclosure. You are told which guarantee you have rather than assumed to have the stronger one.
+
+**4. No external binaries, no shell, no subprocess.**
+TokenGen does not shell out to `lsblk`, `mount`, `gpg`, or anything else. Every mechanism is implemented in
+Rust against the kernel interface directly, so there is no `PATH` to poison and no argument to inject.
+
+**5. Three third-party dependencies.**
+`getrandom`, `zeroize`, and `libc` (Unix target only). That is the entire external dependency graph — there
+is no cryptography library, because there is no vault yet to encrypt. A security tool's supply chain is an
+attack surface, and this one is small enough to read in an afternoon.
+
+**6. The method is part of the product.**
+Every feature is frozen against a specific commit after an anchored gate run: cold rebuild from an extracted
+copy, all gates green, CI green on three platforms. Every amendment and every defect found is recorded — see
+[Why the failures are public](#why-the-failures-are-public).
+
+---
+
+## Using it today
+
+Requires a Rust toolchain and Linux. **A removable drive must be attached and mounted**, and your working
+directory must be on it.
+
+```console
+$ cd /media/you/YOUR-DRIVE
+$ tokengen status
+tokengen 0.1.0
+session guard: present
+binding level: DISK — the serial belongs to the medium, so replacing the enclosure is detected.
+
+$ tokengen generate -l 32
+Xk9mP2vQ7rT4wY8nB3cF6hJ5sL1dG0zA
+```
+
+That secret is **printed and gone**. Nothing was saved. Copy it now, or it is lost.
+
+```console
+$ tokengen generate -c hex -l 64      # character sets: alnum, lower, upper, digits, hex
+$ tokengen status                     # what the guard sees, without generating
+$ tokengen help
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `2` | usage error |
+| `3` | **security refusal** — no drive, wrong drive, or an identity that cannot be verified |
+| `4` | this location or platform cannot be used (no device backend, or the working directory has no block device) |
+| `5` | generation failed |
+
+**One rule with no exceptions: a non-zero exit leaves stdout empty.** A script cannot mistake a refusal for
+a secret, because a refusal produces no output at all.
+
+---
+
+## What TokenGen cannot do
 
 Stated because a limitation the user is not told about is a limitation they will assume away.
 
-- **Memory locking and core-dump disabling are Linux-only in the current revision.** Guarantees 4 and
-  5 depend on `mlock`/`munlock` and `setrlimit(RLIMIT_CORE)`, which are POSIX interfaces. The Windows
-  backend is **deferred**: on a non-Unix target these capabilities are **not provided at all**, and
-  the library reports `NotSupported` rather than silently succeeding. Code that asks for a lock on
-  Windows receives an error; it does not receive a false assurance.
-- **Zeroization is best-effort against a privileged attacker.** Wiping memory protects against
-  crashes, swap files, and later reuse of the same allocation. It does not protect against a
-  compromised kernel, a hypervisor, or hardware that can read physical memory.
-- **A copy of a secret is not automatically protected.** `Secret<T>` wipes what it owns. Copying its
-  bytes into an ordinary `Vec<u8>`, a `String`, or a language runtime that manages memory itself
-  creates material that nothing will wipe. This is a property of the surrounding language, not of
-  this library.
-- **`#[must_use]` is not exhaustive.** Discarding the whole `(Secret, MemoryLockStatus)` tuple warns,
-  but `let (secret, _) = Secret::new(buf);` does not. The caller must read the status; the type
-  system will not force them to.
-- **This is not a key store.** `Secret<T>` protects a buffer for the duration of an operation. It does
-  not persist, rotate, or manage keys.
+**About storage (the big one):**
 
-### The USB session guard (F3.5)
+- **Nothing is stored.** There is no vault yet. A generated secret exists only in the terminal until you copy
+  it. This is the most significant gap and the next major piece of work.
+- **There is no recovery.** No backup, no export, no recovery code — because there is nothing to recover yet.
+  When the vault ships, **recovery will be an encrypted export the user controls**, never a cloud service and
+  never a backdoor. Losing the drive while holding that export is recoverable; losing both is not, and no
+  design changes that.
 
-- **The session guard is Linux-only in the current revision.** It binds a session to the device backing a
-  working directory, using `/sys/dev/block`, `/sys/block/<dev>/device/*`, and `/dev/disk/by-uuid` — Linux
-  facilities. On macOS and Windows the backend is **not provided**, and the guard reports `NotSupported`
-  rather than silently reporting a session as present. **This is deliberate and enforced at compile time**:
-  the backend is gated `#[cfg(target_os = "linux")]`, so those platforms cannot acquire a backend that
-  cannot work.
-- **It detects; it does not exit.** `check()` reports whether the bound device is still the same one. Acting
-  on that — dropping secrets, closing the UI — is the caller's job. The guard cannot meet the one-second
-  bound on its own: it owns 250 ms of it.
-- **The guard does not assert how quickly a caller reacts.** Its latency test measures *detection* only.
-  A session meets the end-to-end bound only if the caller also polls at least every 250 ms and acts
-  promptly — including while blocked on input.
-- **`Unverifiable` is treated as a failure, not a warning.** If a device's serial or filesystem UUID cannot
-  be read, the guard refuses rather than binding to a weaker signal. On a drive that exposes no serial in
-  sysfs at all, the guard will **not run at all** until that path is implemented. Failing closed is
-  intended, and this narrows which drives work.
-- **On a drive that exposes no serial of its own, the guard binds to the USB enclosure instead.** Ordinary
-  USB flash drives often have no disk serial. The guard then identifies the *enclosure*: it still notices the
-  drive being unplugged, a different drive substituted, or the same drive moved to another port — but it does
-  **not** notice the memory inside the same enclosure being replaced. Which kind of binding you have is
-  reported rather than assumed. Refusing such drives entirely was the alternative, and it would have made the
-  tool unusable on a very common class of USB stick.
-- **A device soldered internally but attached over USB is treated as removable.** It is indistinguishable
-  from an external drive by any signal the operating system exposes. Refusing every USB device to defend
-  against that configuration would reject every external drive.
-- **Removability is decided mainly by how a device is attached, not by the kernel's `removable` flag.** The
-  flag cannot distinguish a USB enclosure that presents a fixed disk (which reports `0`) from an internal
-  drive (which also reports `0`), so a tool that trusted the flag alone would refuse a legitimate external
-  hard drive. A **removable** transport (USB, eMMC, Thunderbolt, FireWire) is accepted on that basis alone;
-  a **fixed** transport (NVMe, ATA, SATA) is accepted if the kernel reports the media as removable, which is
-  the correct behaviour for a card reader or a media slot. So the rule is not "the flag never matters" — it
-  matters for fixed transports, by design.
-- **The working directory must be on a real block device.** A directory on a `tmpfs`, an overlay filesystem
-  (common inside containers), or a network mount has **no device behind it**, so the guard cannot bind and the
-  tool exits with code 4. This is reported as *"not on a block device at all"* rather than as a missing
-  device, because the remedies differ — replugging a drive will never fix a `tmpfs` path.
-- **The guard verifies the device, not the filesystem.** It confirms the same device is still present and
-  has the same identity. It does not check that the filesystem on it is intact, uncorrupted, or unmodified.
-- **An attacker who images the medium wins.** The guard binds to a device's identity — its serial and
-  filesystem UUID. It cannot detect data copied onto identical media, because identity is a property of the
-  device, not of its contents. This also covers a device that under-reports its own serial length: it would
-  yield a shorter (prefix) serial, but two different devices still differ, so a swap is still detected.
-- **The device identification is verified against USB hardware; the platform backends are not verified at
-  all.** What has been exercised on real hardware is the Linux device path, with USB drives attached — a
-  removable drive is accepted, an internal root is refused, and identity survives unplugging and re-plugging.
-  What has **not** been exercised anywhere is the macOS and Windows backend, because those backends do not
-  exist yet; those platforms are compiled by CI and then refuse with `NotSupported`. Compiled is not
-  verified, and this tool should not be trusted on macOS or Windows until that work lands.
+**About platforms:**
+
+- **Linux only.** Windows and macOS have no device backend; TokenGen refuses there rather than pretending.
+- **Memory locking and core-dump suppression are Linux-only** in this revision.
+- **The working directory must be on a real block device.** A `tmpfs`, an overlay filesystem, or a network
+  mount has no device behind it, so the guard cannot bind and exits with code 4.
+
+**About the threat model:**
+
+- **Zeroization is best-effort against a privileged attacker.** Wiping memory protects against a later reader
+  of that memory. It cannot defeat code running in the same process, a kernel that ignores it, or a hardware
+  attacker.
+- **A copy of a secret is not automatically protected.** `Secret<T>` wipes what it owns.
+- **This is not a key store yet** — and when it becomes one, the vault's encryption will be a documented,
+  reviewed construction rather than something improvised.
+- **`#[must_use]` is not exhaustive.** Discarding the whole return value of a capture warns at compile time;
+  destructuring it to discard one part does not.
+- **The session guard detects; it does not exit.** It reports when the bound device changed. A caller that
+  ignores the report has ignored it — which is why the CLI checks twice, once at capture and once
+  immediately before output.
+- **On a drive with no serial of its own, the guard binds to the enclosure.** Unplugging, substitution, and
+  moving ports are detected. **Replacing the memory inside the enclosure is not.**
+- **A device soldered internally but attached over USB is treated as removable.** The two are
+  indistinguishable.
 
 ---
-## Status: there is no installable command yet
 
-**TokenGen 1.0 has not been released.** The `pip install .` path that used to install a `passkey-gen` command
-**has been removed**, because the only implementation that could back it was the legacy Python, which violates
-this project's own invariants. See [`legacy/python/README.md`](legacy/python/README.md) and `SECURITY.md`.
+## Why the failures are public
 
-**This is deliberate.** Installing **no** command is honest; installing the **wrong** one is not. The Rust
-CLI is feature **F4**, which is frozen — see [What is actually implemented](#what-is-actually-implemented)
-for its exact state and the caveats that come with it.
+This repository keeps a record of every defect found, including the ones that were embarrassing: a guard that
+reported a `tmpfs` path as a missing device; a `status` command that quietly broke the no-output-on-failure
+rule; a device-identity walk that could bind to the **host controller** instead of the drive, making two
+different drives look identical and defeating the swap detection entirely.
 
-| I want to… | Where to go |
-|---|---|
-| Build and test the Rust library | `cargo test --release --locked --features test-hooks -p tokengen` |
-| Read the design and the guarantees | [`docs/`](docs/) — `F1_DESIGN.md`, `F2_DESIGN.md`, `F3_DESIGN.md`, `F3.5_DESIGN.md` |
-| Know what this tool cannot do | [the section above](#what-this-tool-cannot-do) — **read this before trusting anything** |
-| Report a vulnerability | [`SECURITY.md`](SECURITY.md) |
-| Understand the roadmap and the gate | [`plan/PROJECT_PLAN.md`](plan/PROJECT_PLAN.md) |
-| See what is being worked on | [`plan/mailroom/`](plan/mailroom/) and [`plan/reports/`](plan/reports/) |
+That last one was found by adversarial review, not by the author. It is documented here because a security
+tool that only publishes its successes is asking you to trust a claim you cannot check.
 
-## Building and testing
+The recurring lesson is recorded too: **checkers that silently ignore input they do not recognise report
+coverage they do not have.** Three separate defects came from that single shape.
 
-Requires **Rust 1.85** (pinned in `rust-toolchain.toml`).
+See [`docs/`](docs/) for design records, completion reports, and the amendments that document every change to
+a frozen artifact.
 
-```bash
-cargo build --release --locked
-cargo test --release --locked --features test-hooks -p tokengen      # the main crate
-cargo test --release --locked -p tokengen-sys                        # the platform crate
-cargo clippy --all-targets --features test-hooks -- -D warnings
-cargo fmt --check
-./scripts/cfg_check.sh                                               # compiles the deferred cfg branches
+---
+
+## Roadmap
+
+Ordered by what reduces risk fastest, not by what is most visible.
+
+| Feature | What it delivers | State |
+|---|---|---|
+| **Vault** | encrypted store on the drive; the thing that makes this a password manager | **Next** |
+| **Encrypted export** | user-controlled backup and recovery | With the vault |
+| **Display / clipboard** | safe reveal, auto-clear, never scrollback by default | Planned |
+| **Passphrase prompt** | so the vault can be unlocked | Planned |
+| **Release pipeline** | signed binaries, checksums, reproducible builds | Planned |
+| **Windows / macOS** | the same guarantees off Linux | Blocked on hardware to verify against |
+
+**On WebAuthn:** TokenGen's name suggests WebAuthn credential generation. The Rust engine does **not**
+implement CBOR attestation or credential structures today — it generates high-entropy secrets. A non-runnable
+reference implementation of that encoding is kept in `legacy/python/` so the Rust work can be checked against
+it when it is built. **If you need WebAuthn credentials today, TokenGen is not that tool yet.**
+
+---
+
+## Building and verifying
+
+```console
+$ cargo build --release --locked -p tokengen-cli
+$ cargo test --release --locked --workspace
+$ ./scripts/cfg_check.sh          # every cfg branch compiles, not just the active one
+$ ./scripts/footprint_check.sh    # no file/environment write surface in shipped code
+$ ./scripts/dependency_check.sh   # the dependency allow-list holds
 ```
 
-The whole suite runs in **CI on Linux, macOS and Windows** for every push. A green matrix means the code
-**compiles and the tests pass** on those platforms — it does **not** mean the tool works on them; see the
-platform note in [What This Tool Cannot Do](#the-usb-session-guard-f35).
+Requires Rust **1.85** (pinned in `rust-toolchain.toml`; declared honestly in `Cargo.toml` because `zeroize`
+1.9.0 requires it).
 
-## What is actually implemented
+**No reproducible-build guarantee yet, and no signed releases.** Until those exist, a binary you did not build
+yourself cannot be verified — build from source.
 
-| Feature | State |
-|---|---|
-| **F1** — CSPRNG entropy | **Frozen.** Kernel CSPRNG, no user-space PRNG state. |
-| **F2** — charset / rejection sampling | **Frozen.** Zero modulo bias. |
-| **F3** — zeroization, memory locking, core-dump suppression | **Frozen.** Linux only. |
-| **F3.5** — USB session guard | **Frozen** at `3c9dcbc`. Linux only. |
-| **F4** — CLI | **Frozen** at `8ec7cdb`, verified against that commit — see the caveat below. |
-| F5–F10 | Not started. See the roadmap. |
+---
 
-### F4: frozen, and stale
+## Security
 
-F4's completion report ([`plan/reports/F4/F4_Completion_Report.md`](plan/reports/F4/F4_Completion_Report.md))
-verifies the CLI at `8ec7cdb`: 10/10 gates, run from an extracted copy in a tmpfs, 7 tests passing, exit
-codes re-measured live.
+Report vulnerabilities privately — see [`SECURITY.md`](SECURITY.md). Private vulnerability reporting is
+enabled on this repository.
 
-That record is accurate **for `8ec7cdb`** — which **is an ancestor of HEAD**. It is no longer accurate for
-**HEAD**. Twelve commits have landed underneath it, two of which touch exactly what F4 matches on:
+**Do not open a public issue for a security defect.** The disclosure route is checked and working; please use
+it.
 
-| Change | Effect on F4 |
-|---|---|
-| **AM-007** | added `SessionError::NoBlockDevice` — **a new CLI match arm exists post-freeze** |
-| **AM-008** | added `SerialSource` — **not surfaced by the CLI** |
+## Licence
 
-**Frozen and intact:** the interface, the exit codes, and the no-secret-on-failure rule.
-
-**What the freeze now hides:** `tokengen status` does not report which binding level the session has.
-AM-008 made `SerialSource` part of the session identity precisely so a caller could distinguish an
-**enclosure-level** binding — but the CLI discards that information at the boundary. On a stick whose
-binding is enclosure-level, a user gets no warning. The value exists upstream; it is never printed.
-
-That gap is not a regression; it was never implemented. It is recorded here rather than left for a
-reader to discover.
-
-## A note on the legacy Python
-
-`legacy/python/` holds the original Python prototype. It is **unmaintained, not installed, and not part of
-the trust path**, and its own README explains why it cannot satisfy G3 (fail-closed). It is kept only because
-it is the sole end-to-end WebAuthn/CBOR reference in the repository. **F4** does not use it, and nothing
-should; it is kept as historical reference only.
-
-**Do not use it. Do not rely on its tests** — they are not run by any CI job.
+Apache-2.0. See [`LICENSE`](LICENSE).
