@@ -68,6 +68,12 @@ const _: () = {
 /// Which identity component a status refers to. Non-secret.
 pub use tokengen_sys::device::IdentityComponent;
 
+/// **Which component the serial binding is at** (AM-008/AM-009).
+///
+/// Re-exported rather than redefined: the platform layer decides it, and restating the enum here would let
+/// the two drift. The CLI matches on this to tell a user that their binding is enclosure-level.
+pub use tokengen_sys::device::SerialSource;
+
 /// The identity bound at capture time: the filesystem UUID and the hardware serial.
 ///
 /// **Not secret** — these are device properties, not key material. `Clone`/`Debug`/`PartialEq` are
@@ -78,8 +84,16 @@ pub use tokengen_sys::device::IdentityComponent;
 pub struct DeviceIdentity {
     /// The filesystem UUID, from the reverse traversal of `/dev/disk/by-uuid`.
     pub uuid: String,
-    /// The hardware serial, from `device/serial` or, for USB, `device/vpd_pg80`.
+    /// The hardware serial, from `device/serial`, `device/vpd_pg80`, or — when the disk exposes neither —
+    /// the USB bridge's serial.
     pub serial: String,
+    /// **Which component `serial` belongs to.**
+    ///
+    /// Carried through the session layer because it is part of what the guard guarantees: an `Enclosure`
+    /// binding does not detect the memory inside the enclosure being replaced. Dropping it here would leave
+    /// the CLI unable to tell a user which guarantee they actually have — the information would exist and be
+    /// discarded at the boundary, which is how false assurance starts.
+    pub serial_source: SerialSource,
 }
 
 /// The result of a guard check. **Every variant except `Present` is abort-worthy** (§5.2).
@@ -301,6 +315,7 @@ impl DeviceReader for SystemDeviceReader {
             .map(|id| DeviceIdentity {
                 uuid: id.uuid,
                 serial: id.serial,
+                serial_source: id.serial_source,
             })
             .map_err(map_error)
     }
@@ -363,6 +378,10 @@ impl<R: DeviceReader> SessionGuard<R> {
                 bound: DeviceIdentity {
                     uuid: String::new(),
                     serial: String::new(),
+                    // AM-010: a placeholder, never read — `check` returns `Disabled` without consulting it.
+                    // `Disk` is chosen because it is the level a placeholder should not overstate; nothing
+                    // ever reports this value.
+                    serial_source: SerialSource::Disk,
                 },
                 _not_send_or_sync: PhantomData,
             };

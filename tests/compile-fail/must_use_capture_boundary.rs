@@ -34,6 +34,7 @@ impl DeviceReader for StubReader {
         Ok(DeviceIdentity {
             uuid: "uuid-a".to_string(),
             serial: "serial-a".to_string(),
+            serial_source: SerialSource::Disk,
         })
     }
 }

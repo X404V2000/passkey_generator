@@ -141,9 +141,12 @@ mod guard_enabled {
     }
 
     fn id(uuid: &str, serial: &str) -> DeviceIdentity {
+        // AM-010: the binding level is part of the identity. These fixtures model a disk-level binding —
+        // the tests exercise swap detection, and the level does not affect it.
         DeviceIdentity {
             uuid: uuid.to_string(),
             serial: serial.to_string(),
+            serial_source: tokengen::session::SerialSource::Disk,
         }
     }
 

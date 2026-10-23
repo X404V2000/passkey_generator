@@ -234,6 +234,29 @@ fn build_charset(spec: &CharsetSpec) -> Result<Charset, String> {
 ///
 /// The identities in `IdentityMismatch` are **device properties, not secrets** (F3.5 documents this), so
 /// naming them here is intended: it tells the user *what changed*.
+/// Say, in the user's terms, **what the serial binding can and cannot detect** (AM-010).
+///
+/// This exists because AM-008 made the binding level part of the identity precisely so a caller could state
+/// it. A drive with no disk serial binds to the USB enclosure, which does not detect the medium inside the
+/// enclosure being replaced — a narrower guarantee, and the user is entitled to know which one they have.
+fn describe_binding_level(source: tokengen::session::SerialSource) -> String {
+    match source {
+        tokengen::session::SerialSource::Disk => {
+            "binding level: DISK — the serial belongs to the medium, so replacing the enclosure is detected."
+                .to_string()
+        }
+        tokengen::session::SerialSource::Enclosure => {
+            "binding level: ENCLOSURE — this drive exposes no serial of its own, so the guard bound to the \
+             USB enclosure. Unplugging, substituting a different enclosure, and moving to another port are \
+             all detected. Replacing the MEMORY INSIDE this enclosure is NOT detected."
+                .to_string()
+        }
+        // Non-exhaustive upstream: a level this build does not know must not be described as the stronger
+        // one. Say so rather than guess.
+        other => format!("binding level: {other:?} — unknown to this build; do not assume disk-level."),
+    }
+}
+
 fn describe_refusal(status: &GuardStatus) -> String {
     match status {
         GuardStatus::Present => "present".to_string(),
@@ -290,8 +313,24 @@ fn run(args: &[String]) -> ExitCode {
             // the guard's state), so success is exit 0 and the state lives in the OUTPUT, where a script
             // reads it. A caller that wants the guard's verdict runs `generate`, whose exit code is the
             // verdict. That keeps one rule with no exceptions: **non-zero means no stdout**.
+            // The status is reported, and so is WHICH GUARANTEE the user has (AM-010).
+            //
+            // `Present { expected }` carries the identity bound at capture, including `serial_source`. A
+            // drive bound at **Enclosure** does not detect the memory inside the enclosure being replaced.
+            // A user who is not told that has been given a weaker guarantee than they believe — the
+            // false-assurance class — so the level is printed rather than left in the struct.
             let report = match SessionGuard::capture(SystemDeviceReader::new(), &workdir) {
-                Ok((_guard, status)) => format!("session guard: {}", describe_refusal(&status)),
+                Ok((guard, status)) => {
+                    let line = format!("session guard: {}", describe_refusal(&status));
+                    // `Present` is a unit variant; the bound identity lives on the guard itself.
+                    match status {
+                        GuardStatus::Present => format!(
+                            "{line}\n{}",
+                            describe_binding_level(guard.identity().serial_source)
+                        ),
+                        _ => line,
+                    }
+                }
                 Err(e) => format!("session guard: unavailable ({e:?})"),
             };
             println!("tokengen {}", env!("CARGO_PKG_VERSION"));
@@ -439,4 +478,63 @@ fn run(args: &[String]) -> ExitCode {
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     run(&args)
+}
+
+#[cfg(test)]
+mod binding_level_tests {
+    //! Unit tests for `describe_binding_level` (AM-010).
+    //!
+    //! The success path that prints this line needs a **removable device**, which CI and this host do not
+    //! have. The helper is therefore tested directly: it is pure, and the wording is what a user acts on.
+    //!
+    //! **What this does NOT prove** is that the line is reached `status` — that requires a drive. It is
+    //! recorded as untested rather than implied to be covered.
+
+    use super::describe_binding_level;
+    use tokengen::session::SerialSource;
+
+    /// A disk-level binding says so, and says the enclosure is covered.
+    #[test]
+    fn disk_level_states_that_the_medium_is_bound() {
+        let text = describe_binding_level(SerialSource::Disk);
+        assert!(
+            text.contains("DISK"),
+            "a disk binding must be labelled DISK, got: {text}"
+        );
+        assert!(
+            text.to_lowercase().contains("medium"),
+            "it must say the serial belongs to the medium, got: {text}"
+        );
+    }
+
+    /// **An enclosure binding must state the limitation, not merely be labelled.**
+    ///
+    /// The whole reason AM-008 made the level part of the identity is so a user can tell what is and is not
+    /// detected. A line that only said "ENCLOSURE" would be a label they cannot act on.
+    #[test]
+    fn enclosure_level_states_what_is_not_detected() {
+        let text = describe_binding_level(SerialSource::Enclosure);
+        assert!(
+            text.contains("ENCLOSURE"),
+            "an enclosure binding must be labelled ENCLOSURE, got: {text}"
+        );
+        assert!(
+            text.contains("NOT detected"),
+            "it must state plainly what is not detected — replacing the medium. Got: {text}"
+        );
+        assert!(
+            text.to_lowercase().contains("memory"),
+            "it must name what can be swapped undetected, got: {text}"
+        );
+    }
+
+    /// **Disk and enclosure wording must be distinguishable**, or the distinction is decorative.
+    #[test]
+    fn the_two_levels_read_differently() {
+        assert_ne!(
+            describe_binding_level(SerialSource::Disk),
+            describe_binding_level(SerialSource::Enclosure),
+            "a user must be able to tell the two guarantees apart from the text alone"
+        );
+    }
 }

@@ -123,6 +123,9 @@ impl DeviceReader for NoIoReader {
         Ok(DeviceIdentity {
             uuid: "uuid-a".to_string(),
             serial: "serial-a".to_string(),
+            // AM-010: the level is part of the identity. This fixture is a disk-level binding; the value is
+            // irrelevant to what this test measures (latency), but it must be supplied.
+            serial_source: tokengen::session::SerialSource::Disk,
         })
     }
 }
