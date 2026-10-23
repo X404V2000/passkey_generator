@@ -19,7 +19,7 @@
 // session to continue" — is enforced by `check()` at runtime, not by the type system at capture.
 
 use std::path::Path;
-use tokengen::session::{DeviceIdentity, DeviceReader, SessionError, SessionGuard};
+use tokengen::session::{DeviceIdentity, DeviceReader, SerialSource, SessionError, SessionGuard};
 
 struct StubReader;
 
