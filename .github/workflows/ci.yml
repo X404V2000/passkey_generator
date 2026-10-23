@@ -99,7 +99,7 @@ jobs:
       # On windows-latest the default shell is PowerShell, and `set -e` is not PowerShell: it is parsed as
       # `Set-Variable -e` and fails with "Missing an argument for parameter 'Exclude'" BEFORE any cargo
       # command runs. The step reports failure with NO compiler output, because clippy never executed.
-      # Measured in the run log for 3e5d1e0.
+      # Measured in the CI run log (commit hash no longer reachable after the history purge).
       #
       # The repository already pinned `shell: bash` on two earlier steps for this reason. This new step did
       # not, and reproduced the defect exactly.
