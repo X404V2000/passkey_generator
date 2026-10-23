@@ -29,3 +29,6 @@ target/
 
 # Media & Screenshots
 *.png
+
+# Planning
+plan/
