@@ -59,7 +59,8 @@ commit will be assessed against `main`.
 
 **Out of scope:**
 
-* **`legacy/python/`** — the original Python prototype. It is **unmaintained**, is **not part of the tool**,
+* **`legacy/python/`** — a non-runnable reference for the WebAuthn/CBOR encoding. The Python runtime itself
+  was deleted (AM-009) because it violated G3. What remains is **unmaintained**, is **not part of the tool**,
   and is not installed by any packaging path. It violates G3 by design and its own README says so. Reports
   about it will be closed as out of scope; see `legacy/python/README.md`.
 * **Documented limitations.** `README.md` → *"What This Tool Cannot Do"* lists what this tool explicitly

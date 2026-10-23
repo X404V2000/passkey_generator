@@ -1,36 +1,25 @@
-# Legacy Python implementation — **UNMAINTAINED. NOT PART OF THE TRUST PATH.**
+# Legacy Python — **REFERENCE ONLY. NOT RUNNABLE. NOT PART OF THE TRUST PATH.**
 
-**Do not use this code. It is not the tool.**
+**This is not the tool, and it does not run.** The supported implementation of TokenGen is the **Rust**
+workspace at the repository root (`src/`, `tokengen-sys/`, `tokengen-cli/`).
 
-The supported implementation of TokenGen is the **Rust** workspace at the repository root
-(`src/`, `tokengen-sys/`). This directory is the **original Python prototype**, kept for reference only.
+## What is actually in this directory
 
-## Why it is here, and not deleted
+| File | Purpose |
+|---|---|
+| `passkey_gen/webauthn.py` | The **WebAuthn/CBOR** encoding — the algorithmic reference the Rust implementation will be checked against |
+| `passkey_gen/charsets.py` | The character-set definitions, for the same reason |
 
-It is the only **end-to-end** exercise of the WebAuthn/CBOR passkey generation that exists in this
-repository. **F4** rebuilds that behaviour in Rust, and will want a reference for how it was wired.
+**Nothing else survives.** See AM-009.
 
-That is the whole reason. It is not here because it works, is supported, or should be run.
+## What was removed, and why
 
-## Why it is not the installed command
+The rest of the original prototype was **deleted** on 2026-10-23:
 
-Until this change, `pyproject.toml` carried:
+`memory.py`, `clipboard.py`, `display.py`, `process.py`, `cli.py`, `generator.py`, `__init__.py`, and all nine
+test files.
 
-```toml
-[project.scripts]
-passkey-gen = "passkey_gen.cli:main"
-```
-
-so `pip install .` produced a `passkey-gen` command bound to **this** code. That is recorded risk **R7** —
-*"the legacy Python path is installed instead of Rust"*.
-
-The entry point has been **removed**, and this code moved out of `src/`. `pip install .` now creates **no
-runnable command at all**. That is deliberate: the Rust CLI does not exist yet (it is F4), and installing
-**no** command is honest where installing the **wrong** one is not.
-
-## The reason it cannot be the tool — G3
-
-`passkey_gen/memory.py` contains:
+**`memory.py` violated G3 — fail-closed — and could not be fixed:**
 
 ```python
 except Exception:
@@ -38,45 +27,27 @@ except Exception:
     pass
 ```
 
-**"Gracefully degrade" is the opposite of this project's first invariant, G3 (fail-closed).** When `mlock`
-is unavailable, this implementation **continues without it**, and the CLI reports the state next to other
-`[SECURE]` lines:
+A tool that cannot lock its memory must **refuse**, not continue with a weaker guarantee while reporting
+success. In another branch it swallowed the failure to obtain the buffer address entirely. That is the
+false-assurance class this project treats as its worst defect.
 
-```
-[*] Linux Process Defense Audit:
-  - Core Dumps Disabled (RLIMIT_CORE=0): [SECURE]
-  - Memory Lock Available (mlock):       [UNAVAILABLE]
-```
+The other runtime modules carried the same swallowed-exception shape, and the tests **never ran** — there was
+no CI step for Python, so any green result would have been imaginary.
 
-| | when the mechanism is unavailable |
-|---|---|
-| **Rust (the project)** | returns `Err(NotSupported)`; **the guard refuses to run** |
-| **this prototype** | runs anyway, degraded, with no refusal |
+**Deleting the unsafe runtime is now possible precisely because this file no longer imports it.** The CBOR
+encoding below never depended on `memory.py`; the import there was incidental.
 
-A user of this code gets a tool whose central guarantee is **conditional**, and nothing stops them. That is
-the false-assurance failure mode the project treats as its worst defect.
+## Why these two files were kept
 
-**Stated fairly:** this code attempts zeroization and `mlock` in good faith, and its behaviour is a
-reasonable choice for a different project. It is wrong for **this** one, whose invariants forbid it. It is
-not excluded because it is Python; it is excluded because it **cannot honour G3** without a rewrite, and no
-one has asked for that rewrite.
+They are the only **end-to-end** exercise of WebAuthn/CBOR passkey generation in this repository. When that
+behaviour is rebuilt in Rust it will want a reference for how it was wired — **as an algorithm, not as a
+program**.
 
-## The tests here do not run
+**Treat them as a specification written in Python syntax.** Copy the structure; do not import, execute, or
+trust them.
 
-`legacy/python/tests/` holds nine test files. **No CI job runs them, and they cannot run without `pytest`
-and the Python dependencies installed.** They are inert.
+## This is still guarded
 
-They are recorded here explicitly so nobody mistakes their presence for coverage. `pyproject.toml` no longer
-configures `pytest` for this directory at all.
-
-## If you are looking for the tool
-
-* **Design and guarantees:** `docs/` and the repository `README.md`.
-* **What the tool cannot do:** `README.md` → "What This Tool Cannot Do". Read this before trusting anything.
-* **Security reports:** `SECURITY.md` at the repository root.
-* **Roadmap:** `plan/PROJECT_PLAN.md`.
-
-## Decision record
-
-Removal from the trust path: **F3.9** (`plan/reports/F3.9/`) and **D-P12**
-(`plan/founder_office/decisions/`). Risk register entry: **R7** (`plan/PROJECT_PLAN.md`).
+`tests/f39_trust_path.rs` asserts that **no packaging path binds to a Python entry point** — `pyproject.toml`
+carries no `[project.scripts]` — and that the package finder cannot collect anything from here. Those tests
+pass with only these two files present.

@@ -50,7 +50,10 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 # module docstring previously claiming private key material is "kept in zeroizable
 # memory buffers". The import is retained only so that the eventual Rust port has a
 # visible reference point; it is not evidence of zeroization. See LANGUAGE_DECISION §4.
-from passkey_gen.memory import SecurePasskey, zeroize_buffer  # noqa: F401
+# AM-009: `memory.py` has been REMOVED from this repository because it violated G3 (it swallowed `mlock`
+# failures). This module never called `zeroize_buffer`, and the only other reason the import existed was to
+# keep the symbol in scope for readers. The CBOR encoding below is unchanged and is the whole point of
+# keeping this file — it is a REFERENCE, not a runnable implementation.
 
 
 class WebAuthnAlgorithm(str, Enum):

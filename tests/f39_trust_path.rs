@@ -117,10 +117,39 @@ fn packaging_does_not_reach_the_legacy_package() {
         "src/passkey_gen still exists. The legacy implementation must live under legacy/python/ so that no \
          `src`-rooted packaging path can collect it. See F3.9 §4."
     );
+    // AM-009: the directory stays — but only the REFERENCE files survive. Its presence is still asserted,
+    // because the WebAuthn/CBOR encoding is the only end-to-end reference the Rust implementation will have.
     assert!(
         root().join("legacy/python/passkey_gen").exists(),
-        "legacy/python/passkey_gen is missing. The legacy code is kept deliberately (it is the only \
-         end-to-end WebAuthn/CBOR reference F4 will have), but it must be where it says it is."
+        "legacy/python/passkey_gen is missing. The WebAuthn/CBOR reference is kept deliberately (it is the \
+         only end-to-end reference the Rust implementation will have), but it must be where it says it is."
+    );
+
+    // AM-009: the G3-violating RUNTIME must be gone. Asserting its absence is what makes this guard stronger
+    // than it was — before AM-009 the test asserted the whole prototype was present, including the code that
+    // swallowed `mlock` failures.
+    for gone in [
+        "legacy/python/passkey_gen/memory.py",
+        "legacy/python/passkey_gen/cli.py",
+        "legacy/python/passkey_gen/clipboard.py",
+        "legacy/python/passkey_gen/display.py",
+        "legacy/python/passkey_gen/process.py",
+        "legacy/python/passkey_gen/generator.py",
+    ] {
+        assert!(
+            !root().join(gone).exists(),
+            "{gone} has reappeared. The Python RUNTIME was removed in AM-009 because it violated G3 \
+             (swallowed `mlock` failures, false assurance). Only the webauthn/charsets REFERENCE may exist \
+             under legacy/python/."
+        );
+    }
+
+    // The reference itself must still be present — otherwise this directory has no reason to exist and the
+    // reference F4/F8 depends on has silently disappeared.
+    assert!(
+        root().join("legacy/python/passkey_gen/webauthn.py").exists(),
+        "legacy/python/passkey_gen/webauthn.py is missing. It is the WebAuthn/CBOR reference the Rust \
+         implementation is checked against (AM-009)."
     );
     assert!(
         root().join("legacy/python/README.md").exists(),

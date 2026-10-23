@@ -6,14 +6,14 @@
 > path** (F3.9): it is no longer installed by any packaging path, and it lives under `legacy/python/` with a
 > README explaining why it cannot satisfy this project's invariants.
 >
-> | | Rust (`src/`, `tokengen-sys/`) | Python (`legacy/python/`) |
+> | | Rust (`src/`, `tokengen-sys/`) | Python (`legacy/python/` — **reference only, not runnable**) |
 > |---|---|---|
 > | Status | **Supported.** F1, F2, F3 and F3.5 are frozen. | **Legacy — do not use for real secrets.** Not installed by any packaging path. |
 > | Zeroization | Enforced by the type system (`Zeroizing<T>`) | `SecurePasskey` only; **not** `WebAuthnPasskey` |
 > | Constant-time comparisons | `subtle` types | Not available |
 > | Memory locking (`mlock`) | Sound (stable buffer address) | Best-effort; GC may move data |
 >
-> **The Python implementation does not satisfy this project's own security invariants and must not be relied on.** Specifically, `WebAuthnPasskey.destroy()` drops a reference without wiping memory, and `export_private_key_pem()` returns an unwipeable `str` containing the private key. See [`docs/LANGUAGE_DECISION.md`](docs/LANGUAGE_DECISION.md) §4 for the verified findings.
+> **The Python implementation does not satisfy this project's own security invariants and must not be relied on.** Its runtime was deleted (AM-009); what remains under `legacy/python/` is a non-runnable reference for the WebAuthn/CBOR encoding. See [`docs/LEGACY_PYTHON_REMOVED.md`](docs/LEGACY_PYTHON_REMOVED.md). Specifically, `WebAuthnPasskey.destroy()` drops a reference without wiping memory, and `export_private_key_pem()` returns an unwipeable `str` containing the private key. See [`docs/LANGUAGE_DECISION.md`](docs/LANGUAGE_DECISION.md) §4 for the verified findings.
 >
 > Security guarantees in the sections below describe the **Rust** implementation unless explicitly stated otherwise.
 
@@ -43,7 +43,7 @@ A cryptographically secure, stateless passkey and secret key generator engineere
 
 4. **Volatile Memory Sanitization & Destruction**:
    - Standard Python strings (`str`) are immutable and reside in PyMalloc heap arenas until reclaimed by garbage collection.
-   - The legacy Python encapsulated secrets inside `SecurePasskey`, backed by native C buffers (`ctypes`). It now lives under `legacy/python/` and is not installed.
+   - The legacy Python encapsulated secrets inside `SecurePasskey`, backed by native C buffers (`ctypes`). **That runtime has been deleted** (AM-009) — only its WebAuthn/CBOR encoding survives, as a non-runnable reference.
    - On context exit or `.destroy()`, memory is actively wiped using OS-level `explicit_bzero` / `memset` and zeroized byte-by-byte.
      - **Scope of this guarantee (Python):** it applies to `SecurePasskey` only. It does **not** apply to `WebAuthnPasskey`, whose `destroy()` sets `self._private_key = None` without wiping, and which never calls `zeroize_buffer` or `mlock`.
    - Implements memory locking (`mlock`) to pin secret buffers in physical RAM and prevent paging to unencrypted swap disks.
