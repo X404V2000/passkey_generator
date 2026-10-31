@@ -167,6 +167,21 @@ weaker rename and fsync guarantees than ext4.** This must be measured, not assum
 
 **MUST:** keep the previous good vault until the new one is confirmed.
 
+### 4.4a A vault requires a DISK-level binding (B1, Grace's blueprint review)
+
+**MUST:** the vault **refuses to be created** on a device whose `SerialSource` is `Enclosure`.
+
+F3.5 permits an enclosure-level binding for a *session* and tells the user. For a **vault** that is not enough:
+the vault is the artifact users must never lose and must never leak, and an enclosure binding means **swapping
+the disk inside the enclosure opens it**. Silently inheriting that weakening would put the vault in a strictly
+worse position than the session guard, which at least reports it.
+
+This is a deliberate narrowing: **a class of ordinary USB sticks cannot hold a vault.** The refusal names the
+reason and says what to use instead. Decision: Founder, 2026-10-31.
+
+**MUST:** the refusal is a **security** outcome, not a capability one, and must not be confusable with the
+"above ceiling" message (G3).
+
 ### 4.5 Constant-time everywhere it matters
 
 **MUST:** passphrase verification and all tag comparisons use constant-time primitives (`subtle`). The project
