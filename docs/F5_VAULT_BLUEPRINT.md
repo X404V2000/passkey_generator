@@ -105,6 +105,42 @@ followed by: `ciphertext(header) || tag_header`, then `ciphertext(body) || tag_b
 **Inside the encrypted header** (not visible to a stranger holding the file): `export_ack` (S2), the entry
 table, timestamps, and the parameter claims.
 
+### 4.0 The body plaintext — the full format (T3, Grace's fourth review)
+
+**The earlier draft specified the body's ciphertext and never its plaintext**, leaving `list`, `get` and the
+splice test unimplementable and inviting an implementer to improvise the real format. Specified:
+
+```
+body_plaintext :=
+    entry_count : u32                      // number of entries that follow
+    entry*                                          // exactly entry_count of them
+
+entry :=
+    name_len    : u16                      // 1..=255
+    name        : [u8; name_len]           // UTF-8, validated
+    kind        : u8                       // 0 = Secret, 1 = Passphrase
+    created     : u64                      // unix seconds
+    updated     : u64
+    secret_len  : u32                      // 1..=65536
+    secret      : [u8; secret_len]
+```
+
+**Validation rules the reader MUST apply, in order:**
+
+1. `entry_count` is read and **must not exceed `MAX_ENTRIES`** (compiled in) — checked **before** any allocation,
+   for the same reason as T4.
+2. Each `name_len` and `secret_len` is bounded by its type's maximum **and** by the bytes remaining; a length
+   that exceeds the remainder is `CorruptBody`, **never a partial parse**.
+3. The body must be **exactly consumed** — trailing bytes after `entry_count` entries are `CorruptBody`. A
+   format that tolerates trailing data cannot detect appended garbage.
+4. Names must be **unique**; a duplicate is `CorruptBody`.
+
+**Why this is safe:** every inner length lives **inside the ciphertext**, so it is covered by `tag_body` and
+cannot be altered without detection. The framing is authenticated *because* the AEAD is applied to the whole
+body, not per entry.
+
+**Test:** a body whose inner `entry_count` exceeds the bytes present is rejected, not partially parsed.
+
 ### 4.1 Which fields are plaintext, and why (S2, Grace's third review)
 
 | Field | Plaintext? | Why |
@@ -127,6 +163,11 @@ vault B both decrypt, producing a file whose metadata says one thing and whose c
 | header | `magic ‖ version ‖ kdf ‖ m ‖ t ‖ p ‖ salt ‖ factor_flags ‖ body_len` — everything outside the ciphertext, so tampering with any header field invalidates `tag_header` |
 | body | **`tag_header`** — the authenticated header tag, so a body from any other file cannot be attached |
 
+**T1 — the AEAD nonces are deliberately NOT in the AAD.** Modifying `nonce_header` or `nonce_body` causes an
+**authentication failure**, not a successful decryption — a denial of service, which an adversary with write
+access to the stick could achieve by deleting the file anyway. **Accepted, and stated rather than omitted**,
+because a reader cannot otherwise tell whether the gap was deliberate.
+
 **Test (S1):** construct a spliced file — header of A, body of B — and assert it **fails** with `CorruptBody`.
 **Every other test in this blueprint opens one file against itself; this is the only one that uses two.**
 
@@ -140,6 +181,21 @@ vault B both decrypt, producing a file whose metadata says one thing and whose c
    the user (see §8).
 5. Decrypt the body; `CorruptBody` if it fails.
 
+**T4 (Grace's fourth review) — `body_len` is bounded BEFORE ANY ALLOCATION.** `body_len` is authenticated, **but
+authentication requires the key and allocation happens before decryption.** A file claiming `body_len = 2⁶³` with
+a well-formed header would make the reader attempt a gigantic allocation before checking any tag — **the same
+class as G3, which this blueprint already closed for `m` and `t`, and the pattern was not applied here.**
+
+**MUST, in this order, before allocating for the body:**
+
+1. **`body_len` must equal `file_size − plaintext_header_size − tag_header_size − tag_body_size`.** The file size
+   is a fact the reader has with no key at all.
+2. **`body_len` must not exceed a compiled-in maximum** for this build, for the same reason `m` is bounded.
+3. A mismatch or an excess is `CorruptHeader`, **before** allocation.
+
+**Test:** a file whose `body_len` disagrees with its actual size, and one whose `body_len` exceeds the maximum,
+are both rejected **with no allocation of the claimed size**.
+
 **The two refusals are deliberately different types** so a downgrade cannot hide behind a capability message
 (Grace's G3).
 
@@ -152,7 +208,13 @@ kdf_salt  = HKDF-SHA256(K1, b"", "tokengen-vault-kdf-salt")       // 32 bytes �
           // value — the salt's job of separating weak inputs was done by Argon2. Deriving two
           // independent values from K1 is exactly what HKDF is for.
 K2        = HKDF-SHA256(device_secret, kdf_salt, "tokengen-vault-device")
-K         = HKDF-SHA256(K1 ‖ K2, kdf_salt, "tokengen-vault-key")  // vault key, 32 bytes
+K         = HKDF-SHA256(K1 ‖ K2, kdf_salt, "tokengen-vault-key")  // master, never used directly
+K_header  = HKDF-SHA256(K, kdf_salt, "tokengen-vault-header")     // T2: per-purpose keys
+K_body    = HKDF-SHA256(K, kdf_salt, "tokengen-vault-body")
+
+// T2 (Grace's fourth review): the header and body are encrypted under DIFFERENT keys. With one
+// key, a nonce collision ACROSS the two contexts would be fatal; with separate keys it cannot
+// happen by construction. Costs two hash calls and removes an entire class of reasoning.
 ```
 
 * **`device_secret`** is derived from the bound `DeviceIdentity` (uuid ‖ serial) — **not** from the serial
@@ -337,6 +399,12 @@ New dependencies, **all in the shipped graph**, pinned and recorded:
     acknowledged export the value **is** 1. Proves it is recorded *and* hidden.
 24. **S3 absence:** `preflight` and `status` output contains **neither the device UUID nor the serial**, asserted
     as an absence over the whole output.
+25. **T2 keys:** the header and body are encrypted under **different** keys — decryption of one with the other's
+    key fails.
+26. **T3 framing:** a body with `entry_count` larger than the bytes present is rejected; trailing bytes after the
+    last entry are rejected; a duplicate name is rejected.
+27. **T4 before allocation:** `body_len` disagreeing with the file size, and `body_len` above the maximum, are
+    both rejected **before** allocating, asserted by the same no-large-allocation check as test 3.
 
 ## 13. Probes and evidence
 
