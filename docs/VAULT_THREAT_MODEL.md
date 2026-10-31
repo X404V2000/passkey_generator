@@ -85,6 +85,18 @@ an exported file is useless on a new stick — and that is precisely "losing you
 protected by your passphrase alone; anyone holding it and guessing your passphrase gets everything." It is
 never created silently.
 
+**MUST — the export REFUSES a weak passphrase (G2a, Grace's review).** Explaining is not enforcing. At the
+export's 3 s target, a 4-digit PIN falls in **minutes**; the Argon2 cost is irrelevant against a weak secret.
+The export therefore rejects a passphrase below a stated minimum strength, or requires an explicit
+acknowledgement that names the specific risk and is **recorded in the export's header**, so no one later
+believes it was strong. This bar is **higher** than the vault's, because the export is the solo-factor artifact.
+
+**MUST — the export is calibrated against a stated SLOW reference device (G2b).** An export tuned to 3 s on a
+modern laptop opens in **12–30 s** on a low-end device. That is an availability failure wearing a warning, and
+recovery actually happening is the entire point of the export. The export records its parameters **and an
+estimated unlock cost on the reference slow device**, so a user is told what recovery will cost **before they
+rely on it**.
+
 ### 4.3 Argon2id parameters: measured **at creation**, floored, and recorded
 
 **MUST:** parameters are calibrated by a **probe on the machine creating the vault**, targeting a **~1 second
@@ -104,9 +116,31 @@ attacker a cheap target. **The two are structurally different jobs:**
 
 **A fixed constant is therefore wrong for somebody. A budget is right for everybody.**
 
-**MUST — compiled-in FLOOR.** The reader **rejects** any vault whose recorded cost is below
-`m = 64 MiB, t = 3, p ≥ 1`. This is what stops a fast machine creating a cheap vault and presenting it as
-strong. **The floor is a security property; the target is a usability property. They are not the same number.**
+**MUST — compiled-in FLOOR, on EACH dimension (G1, Grace's review).** The reader **rejects** any vault with:
+
+> `m < 64 MiB` **OR** `t < 3` **OR** `p < 1`.
+
+**The floor is per-dimension, not on the product `m · t`.** A product floor would accept `m = 4 GiB, t = 1` —
+the most tradeoff-vulnerable shape there is — and **certify it as strong**. Grace found this; it is the single
+most important sentence in this section.
+
+**The floor is a security property; the target is a usability property. They are not the same number.**
+
+**MUST — compiled-in UPPER BOUND, refused before any allocation (G3).** The reader refuses **before allocating**
+if `m` or `t` exceeds a compiled-in maximum this build supports. A header is **attacker-controlled data**: a
+file recording `m = 4 GiB` on a device with 1 GiB free must not cause an allocation attempt, an OOM kill, or —
+via interaction with S1 — data loss during a write.
+
+**The three refusals must be distinguishable in the message:**
+
+| Situation | Message | Is it a security refusal? |
+|---|---|---|
+| Below floor | "this vault was created with parameters weaker than this build accepts" | **yes** — possible downgrade |
+| Above upper bound | "this vault needs more memory than this build will allocate" | **no** — a capability limit |
+| Unreadable / corrupt header | "this vault header is damaged" | **no** — corruption |
+
+Conflating them would either hide a downgrade attack behind a capability message, or make a legitimate vault
+look like an attack.
 
 **MUST — ceiling with a warning, not a refusal.** A vault whose recorded cost is estimated above ~3 s on this
 device is opened **with a visible warning** rather than refused, because refusing is a denial of service on the
