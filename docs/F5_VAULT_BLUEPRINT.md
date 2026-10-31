@@ -70,7 +70,15 @@ for t in Vault VaultEntry EntryKind VaultError; do grep -c "struct $t\|enum $t" 
 Any zero is a defect in this document.
 
 **Operations:** `create`, `unlock`, `list`, `get` (reveal one), `put`, `rename`, `delete`, `rotate`,
-`export`. **`get` returns `Secret<Vec<u8>>`** — the plaintext never crosses the API as `String`.
+`export`, **`import`**, **`preflight`**. **`get` returns `Secret<Vec<u8>>`** — the plaintext never crosses the API
+as `String`.
+
+* **`import` (R2, Grace's re-review):** reads an export, prompts for its passphrase, **re-keys onto the current
+  device**, and writes a normal vault through the **same corrected write sequence**. Without this, an export is a
+  file written once and read by nobody — the appearance of a backup, which is worse than none.
+* **`preflight` (R1):** reports, for the current directory, the binding level and **whether a vault may be
+  created here**. No vault, no passphrase, no commitment. It exists so a user whose stick is enclosure-bound
+  learns this **before** trying, and the refusal message points to it.
 
 ## 4. File format — versioned, self-describing, bounds-checked before use
 
@@ -108,6 +116,9 @@ followed by: `ciphertext(header) || tag`, then `ciphertext(body) || tag`.
 ```
 K1        = Argon2id(passphrase, salt, m, t, p)                    // 32 bytes
 kdf_salt  = HKDF-SHA256(K1, b"", "tokengen-vault-kdf-salt")       // 32 bytes — B4
+          // EMPTY salt is correct: RFC 5869 permits it because K1 is ALREADY a uniform 32-byte
+          // value — the salt's job of separating weak inputs was done by Argon2. Deriving two
+          // independent values from K1 is exactly what HKDF is for.
 K2        = HKDF-SHA256(device_secret, kdf_salt, "tokengen-vault-device")
 K         = HKDF-SHA256(K1 ‖ K2, kdf_salt, "tokengen-vault-key")  // vault key, 32 bytes
 ```
@@ -173,6 +184,11 @@ produces an **empty `vault.prev`**, and a subsequent failure leaves no vault and
 **The invariant:** after step 4 the vault is still the old, complete one; after step 6 it is the new, complete
 one. **There is no step at which no complete vault exists.**
 
+**Cost, stated (R3, Grace's re-review):** copying the current vault doubles write volume per mutation — a 1 MiB
+vault makes every `put` a 2 MiB write on a slow stick. **Accepted**, because the alternative (a generation-pair
+`vault.1`/`vault.2` rotated alternately) avoids the copy but complicates recovery-path selection. Recorded so the
+trade is visible if it ever matters.
+
 **Probe B2 measured `ntfs3` supporting steps 5–8** (`fsync` + directory `fsync` + atomic `rename`).
 **On a filesystem where any step cannot be confirmed, the vault REFUSES to write** rather than writing and
 hoping. This is checked at open, not assumed.
@@ -200,6 +216,20 @@ file is created or modified.**
 **`WrongPassphrase` and `DeviceMismatch` produce the SAME user-facing message** — telling an attacker they have
 the right stick but the wrong passphrase is an oracle. The distinction exists in the type for testing and
 logging; it must never reach the terminal.
+
+## 8a. `import` — R2
+
+* Reads an export, verifies `factor_flags` says **no device factor**, prompts for the passphrase.
+* **Re-keys onto the CURRENT device**: the imported vault becomes a normal two-factor vault bound to the stick
+  it now lives on. It does **not** remain passphrase-only.
+* Writes through the **same corrected sequence** as any mutation — importing must not be the one code path that
+  can lose data.
+* **If the target already holds a vault, `import` REFUSES** unless explicitly given `--replace` or `--merge`.
+  It never silently overwrites.
+* If the current device is **enclosure-bound**, `import` refuses for the same reason `create` does (B1) — the
+  user cannot recover *onto* a weaker drive than the vault demands.
+* **Test:** export → import on a second stick → every entry byte-identical; the new vault binds to the **new**
+  device; the original stick cannot open the new vault.
 
 ## 9. The export — a different artifact with a different claim
 
@@ -263,6 +293,12 @@ New dependencies, **all in the shipped graph**, pinned and recorded:
     are unchanged** (no write, no partial write).
 17. **B4:** two different passphrases with the same `salt` produce different `kdf_salt` (i.e. `kdf_salt` is
     derived from K1, not from `salt` directly).
+18. **R1 preflight:** reports refusal for an enclosure-bound drive **without creating anything**, and the
+    refusal message names the preflight command.
+19. **R2 import:** export from stick A → import on stick B → all entries byte-identical, the new vault binds to
+    B, and **A cannot open the imported vault**.
+20. **R2 safety:** `import` onto a directory that already holds a vault **refuses** without an explicit flag.
+21. **R2 container:** importing is refused when the target drive is enclosure-bound (B1 applied to recovery).
 
 ## 13. Probes and evidence
 
