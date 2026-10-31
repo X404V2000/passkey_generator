@@ -85,6 +85,56 @@ the guess this project has already been burned by.
 
 ---
 
+## B1 — MEASURED (retrospective post-dated; see T-0004 phase 0)
+
+Measured with `argon2 0.5.3` (dev-dependency only) on 2026-10-31, `cargo test -p tokengen --test
+argon2_calibration -- --nocapture --ignored`, median of 3, release build.
+
+| Configuration | Median | Work (KiB·t) |
+|---|---|---|
+| RFC-9106 #2 (`m=64MiB t=3 p=4`) | 0.370 s | 196 608 |
+| `64MiB t=3 p=2` | 0.375 s | 196 608 |
+| `64MiB t=1 p=2` | 0.135 s | 65 536 |
+| `128MiB t=3 p=2` | 0.805 s | 393 216 |
+| `256MiB t=1 p=2` | 0.659 s | 262 144 |
+| **`256MiB t=2 p=2`** | **1.092 s** | **524 288** |
+| `512MiB t=1 p=2` | 1.218 s | 524 288 |
+| RFC-9106 #1 (`m=1GiB t=1 p=2`) | 2.603 s | 1 048 576 |
+
+### What the numbers show
+
+**`p=4` buys nothing here.** `RFC-9106 #2` with `p=4` takes **0.370 s**; the same work with `p=2` takes
+**0.375 s** — indistinguishable, because there are only two cores. Recording `p=4` in a vault header would be a
+claim about parallelism the hardware cannot honour.
+
+**`t=1` at high memory is not equivalent to `t>1` at lower memory**, even at equal `m·t`. `512MiB t=1` and
+`256MiB t=2` both score 524 288 but differ: time-memory tradeoff resistance is better with more iterations,
+because an attacker's ASIC/GPU gains less from trading memory for recomputation. **Prefer iterations over raw
+memory once the window is reached.**
+
+**RFC-9106 #1 is unusable here** at 2.6 s for a single unlock.
+
+### Proposed starting point (for Bruce and Grace to attack, not a frozen value)
+
+`m = 256 MiB, t = 2, p = 2` → 1.09 s on this hardware.
+
+* inside the 250 ms – 2 s user budget;
+* more iteration depth than the `t=1` alternatives at similar cost;
+* leaves headroom for slower devices — a device twice as slow would take ~2.2 s, which is why the **floor and
+  the ceiling both go in the header** and the reader warns rather than silently accepting a weaker one.
+
+**Still required before freezing:** a measurement on the **weakest device we intend to support**, and the
+export's parameters (which should be *higher*, because an export is attacked offline at leisure).
+
+### MSRV constraint discovered
+
+`argon2 0.6.0` pulls `ctutils`, which **requires rustc 1.87**. The project pins **1.85.1**. The probe therefore
+uses **`argon2 0.5.3`**.
+
+**Consequence for the blueprint:** adopting the newest `argon2` means raising the declared MSRV — which this
+project has already been burned by once (`rust-version = "1.75"` was false for months). Raising the MSRV is a
+decision with a blast radius, not a dependency bump.
+
 ## Bruce's ruling
 
 * **B2 closed** for `ntfs3` on Linux; **re-probe required** per filesystem/OS combination.

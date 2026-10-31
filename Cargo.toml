@@ -55,5 +55,9 @@ zeroize      = "1"
 tokengen-sys = { path = "tokengen-sys" }
 
 [dev-dependencies]
+# PROBE-ONLY (T-0004 phase 0, closes Bruce's blocker B1). Used exclusively by the calibration probe in
+# `probes/` to measure Argon2id cost on real hardware. It is deliberately a DEV dependency: it must never
+# appear in a shipped binary until the vault is designed and the construction is reviewed.
+argon2 = "0.5"
 tokengen-sys = { path = "tokengen-sys", features = ["test-hooks"] }
 trybuild     = "1"
