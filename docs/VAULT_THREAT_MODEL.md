@@ -85,12 +85,45 @@ an exported file is useless on a new stick — and that is precisely "losing you
 protected by your passphrase alone; anyone holding it and guessing your passphrase gets everything." It is
 never created silently.
 
-### 4.3 Argon2id parameters must be measured, not chosen
+### 4.3 Argon2id parameters: measured **at creation**, floored, and recorded
 
-**MUST:** parameters are selected by a **probe on real hardware**, recorded, and stored in the vault header so
-a future reader knows the cost. A number picked from a blog post is not a decision, it is a guess.
+**MUST:** parameters are calibrated by a **probe on the machine creating the vault**, targeting a **~1 second
+unlock**, and are **stored in the vault header** so a reader knows the cost.
 
-**MUST:** the parameters are **upgradeable** — the header records them, and re-keying is possible.
+**Why not a fixed constant.** Measured on the maintainer's host (2-core Celeron N4020):
+
+| Configuration | This host | A modern laptop (est. 4–10×) |
+|---|---|---|
+| `256MiB t=2 p=2` | 1.09 s | **~0.1–0.25 s** |
+
+A constant tuned to a **slow** device makes modern users wait; a constant tuned to a **fast** device gives an
+attacker a cheap target. **The two are structurally different jobs:**
+
+> Unlock happens **once**, on the user's device, interactively.
+> Attack happens **millions of times**, on the attacker's device, at leisure.
+
+**A fixed constant is therefore wrong for somebody. A budget is right for everybody.**
+
+**MUST — compiled-in FLOOR.** The reader **rejects** any vault whose recorded cost is below
+`m = 64 MiB, t = 3, p ≥ 1`. This is what stops a fast machine creating a cheap vault and presenting it as
+strong. **The floor is a security property; the target is a usability property. They are not the same number.**
+
+**MUST — ceiling with a warning, not a refusal.** A vault whose recorded cost is estimated above ~3 s on this
+device is opened **with a visible warning** rather than refused, because refusing is a denial of service on the
+user's own data. Availability outranks speed.
+
+**MUST — `p` is recorded honestly.** This host has two cores; `p=4` measured *identically* to `p=2`
+(0.370 s vs 0.375 s). Parallelism is recorded as the value actually honoured, never as a claim the hardware
+cannot deliver.
+
+**MUST — exports get a higher target** (currently suggested 3 s), because an export is the artifact an attacker
+takes away and brute-forces offline with no time pressure.
+
+**MUST:** the parameters are **upgradeable** — the header records them, and re-keying is possible. A vault
+created under old parameters must remain readable, or the reader refuses and says so (S4).
+
+**STILL REQUIRED before freezing:** a measurement on the **weakest device we intend to support**. The ~1 s
+target is a proposal; the floor above is what actually constrains attackers.
 
 ### 4.4 Every write is atomic
 
