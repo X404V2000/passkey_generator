@@ -80,6 +80,11 @@ as `String`.
   created here**. No vault, no passphrase, no commitment. It exists so a user whose stick is enclosure-bound
   learns this **before** trying, and the refusal message points to it.
 
+  **S3 — information boundary:** `preflight` and `status` **never print `uuid` or `serial`.** The device identity
+  is one of the two inputs to `device_secret`; a stranger who picks up the stick must get no free readout of it.
+  They print only the **binding level** and the **capability verdict**, and a test asserts those strings are
+  **absent** from the output.
+
 ## 4. File format — versioned, self-describing, bounds-checked before use
 
 ```
@@ -93,10 +98,37 @@ salt         [u8; 32]                from getrandom
 nonce_header [u8; 12]                AES-256-GCM nonce for the header
 nonce_body   [u8; 12]                fresh per write
 factor_flags u8                      bit0 = passphrase, bit1 = device
-export_ack   u8                      0 = normal, 1 = "weak passphrase acknowledged"
 body_len     u64
 ```
-followed by: `ciphertext(header) || tag`, then `ciphertext(body) || tag`.
+followed by: `ciphertext(header) || tag_header`, then `ciphertext(body) || tag_body`.
+
+**Inside the encrypted header** (not visible to a stranger holding the file): `export_ack` (S2), the entry
+table, timestamps, and the parameter claims.
+
+### 4.1 Which fields are plaintext, and why (S2, Grace's third review)
+
+| Field | Plaintext? | Why |
+|---|---|---|
+| `magic`, `version` | yes | required to identify the file before any key exists |
+| `kdf`, `m`, `t`, `p`, `salt` | yes | the reader needs them to derive the key; they cannot be secret |
+| `nonce_header`, `nonce_body` | yes | AEAD nonces; hiding them is meaningless |
+| `factor_flags` | yes | inherent in the file — an attacker learns it by trying to open without a device factor. Stated deliberately, not by oversight |
+| **`export_ack`** | **NO — encrypted** | it announced *"weak passphrase accepted."* That is **target selection** for an attacker. It must remain recorded and undeniable — inside the header, not on the cover |
+
+### 4.2 AEAD binding — `ciphertext(body)` is bound to `ciphertext(header)` (S1)
+
+**Without AAD, the two ciphertexts are independent and can be spliced**: a header from vault A with a body from
+vault B both decrypt, producing a file whose metadata says one thing and whose contents are another.
+
+**MUST — every AEAD call carries AAD:**
+
+| Ciphertext | AAD |
+|---|---|
+| header | `magic ‖ version ‖ kdf ‖ m ‖ t ‖ p ‖ salt ‖ factor_flags ‖ body_len` — everything outside the ciphertext, so tampering with any header field invalidates `tag_header` |
+| body | **`tag_header`** — the authenticated header tag, so a body from any other file cannot be attached |
+
+**Test (S1):** construct a spliced file — header of A, body of B — and assert it **fails** with `CorruptBody`.
+**Every other test in this blueprint opens one file against itself; this is the only one that uses two.**
 
 **Rules the reader MUST enforce, in this order, before any allocation:**
 
@@ -299,6 +331,12 @@ New dependencies, **all in the shipped graph**, pinned and recorded:
     B, and **A cannot open the imported vault**.
 20. **R2 safety:** `import` onto a directory that already holds a vault **refuses** without an explicit flag.
 21. **R2 container:** importing is refused when the target drive is enclosure-bound (B1 applied to recovery).
+22. **S1 splice:** header of vault A + body of vault B → **fails with `CorruptBody`**. The only test that uses
+    two files; without it, "we use AES-GCM" is not a specification.
+23. **S2 leak:** `export_ack` is **not readable** in the first 64 bytes of the file, and after opening an
+    acknowledged export the value **is** 1. Proves it is recorded *and* hidden.
+24. **S3 absence:** `preflight` and `status` output contains **neither the device UUID nor the serial**, asserted
+    as an absence over the whole output.
 
 ## 13. Probes and evidence
 
