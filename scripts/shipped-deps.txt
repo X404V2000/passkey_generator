@@ -31,6 +31,44 @@ cfg-if 1.0.5
 libc 0.2.189
 zeroize 1.9.0
 
+# ------------------------------------------------------------------------------------------------
+# T-0004 VAULT CRYPTOGRAPHY — 25 crates added 2026-10-31, one top-level decision
+#
+# Justification against G11-G13 is by AUDIT, not by assertion: every crate below was scanned for
+# `std::net`, `std::process::Command`, `File::create`, `OpenOptions`, and `std::env::var`. **None of
+# them reference any of those.** They are pure computation — integer maths, buffer transforms, and
+# constant-time helpers. Adding them does not widen the tool's ability to leave a footprint.
+#
+# The reachable top level is five crates (argon2, chacha20poly1305, hkdf, sha2, subtle). Everything
+# below them is their transitive closure from the same RustCrypto family, and is pinned by Cargo.lock.
+#
+# argon2 is 0.5.x, NOT 0.6.x: 0.6 requires rustc 1.87 and this project declares 1.85 (decision V5 —
+# raising it would exclude Debian 13, the current stable, to gain Ubuntu 25.04).
+# ------------------------------------------------------------------------------------------------
+argon2 0.5.3                 # Argon2id password hashing
+password-hash 0.5.0          # argon2's output encoding interface
+base64ct 1.8.3               # constant-time base64 for password-hash
+blake2 0.10.6                # argon2's internal compression function
+chacha20poly1305 0.10.1      # AEAD for header and body
+chacha20 0.9.1               # chacha20poly1305's cipher
+poly1305 0.8.0               # chacha20poly1305's MAC
+aead 0.5.2                   # AEAD trait layer
+universal-hash 0.5.1         # poly1305's trait layer
+hkdf 0.12.4                  # key derivation
+hmac 0.12.1                  # hkdf's PRF
+sha2 0.10.9                  # SHA-256 for hkdf
+digest 0.10.7                # hashing trait layer
+block-buffer 0.10.4          # digest block handling
+crypto-common 0.1.7          # shared crypto traits
+cipher 0.4.4                 # block/stream cipher traits
+inout 0.1.4                  # in-place buffer handling
+generic-array 0.14.7         # fixed-size arrays in the crypto traits
+typenum 1.20.1               # generic-array's type-level numbers
+subtle 2.6.1                 # constant-time comparison — REQUIRED, never use == on tags
+cpufeatures 0.2.17           # runtime CPU feature detection
+opaque-debug 0.3.1           # redacted Debug for key types
+rand_core 0.6.4              # trait bound pulled by argon2; no RNG is used from it
+
 [windows]
 # No `libc`. This is the difference that the first version of this file got wrong.
 getrandom 0.2.17

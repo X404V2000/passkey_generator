@@ -54,6 +54,15 @@ getrandom    = "0.2"
 zeroize      = "1"
 tokengen-sys = { path = "tokengen-sys" }
 
+# Vault cryptography (T-0004). Each is named in docs/F5_VAULT_BLUEPRINT.md §11 with the alternative
+# rejected. Versions are pinned: argon2 stays on 0.5.x because 0.6 requires rustc 1.87 and we declare 1.85
+# (decision V5 — raising it would exclude Debian 13, the current stable).
+argon2      = "0.5"
+chacha20poly1305 = "0.10"
+hkdf        = "0.12"
+sha2        = "0.10"
+subtle      = "2"
+
 [dev-dependencies]
 # PROBE-ONLY (T-0004 phase 0, closes Bruce's blocker B1). Used exclusively by the calibration probe in
 # `probes/` to measure Argon2id cost on real hardware. It is deliberately a DEV dependency: it must never
